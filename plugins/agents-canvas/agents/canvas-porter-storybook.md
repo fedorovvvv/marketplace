@@ -21,7 +21,6 @@ description: |
   Triggers: "vectorize the design system", "port pencil to storybook", "build the port manifest",
   "token contract", "story spec", "design system to storybook", "перенеси дизайн-систему в storybook",
   "сделай port-манифест", "токен-контракт из pencil"
-model: opus
 color: "#5E35B1"
 disallowedTools:
   - mcp__pencil__batch_design

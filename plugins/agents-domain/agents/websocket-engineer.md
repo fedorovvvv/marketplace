@@ -4,7 +4,6 @@ description: |
   EN: Real-time communication specialist for WebSocket, Socket.IO, and SSE architectures. Use when designing or implementing bidirectional messaging — connection lifecycle, authentication during handshake, reconnection with exponential backoff, horizontal scaling via Redis Pub/Sub, and load testing. Hand off to `security-expert` for JWT handshake and message validation review.
   RU: Специалист по real-time коммуникациям для WebSocket, Socket.IO и SSE архитектур. Используй при проектировании или реализации двунаправленного обмена сообщениями — жизненный цикл соединения, аутентификация при handshake, переподключение с exponential backoff, горизонтальное масштабирование через Redis Pub/Sub и нагрузочное тестирование. Передавай `security-expert` для ревью JWT handshake и валидации сообщений.
   Triggers: "WebSocket", "Socket.IO", "real-time messaging", "SSE", "websocket scaling", "reconnection logic", "websocket server", "WebSocket сервер", "real-time", "двунаправленная коммуникация"
-model: sonnet
 tools: [Read, Write, Edit, Bash, Glob, Grep]
 color: '#00C853'
 ---

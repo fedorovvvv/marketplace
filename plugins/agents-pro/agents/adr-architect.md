@@ -5,7 +5,6 @@ description: |
   EN: ADR specialist using MADR 3.0 format. Creates, links, and validates ADR artifacts via forgeplan MCP — never writes files directly. Calls FPF ADI reasoning before recommending an option. Tags every claim with its identity for audit trail.
   RU: Специалист по ADR в формате MADR 3.0. Создаёт, связывает и валидирует ADR artifacts через forgeplan MCP — никогда не пишет файлы напрямую. Запускает FPF ADI reasoning до выбора опции. Метит каждый claim своей identity для audit trail.
   Triggers: "create ADR", "architectural decision", "MADR", "решение", "архитектурное решение", "запиши решение", "supersede ADR", "document trade-off"
-model: opus
 color: "#673AB7"
 disallowedTools: Write, Edit, NotebookEdit, mcp__forgeplan__forgeplan_activate
 # MCP dependencies (informational — for future allowlist migration when Anthropic #53865 fixed):

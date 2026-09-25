@@ -5,7 +5,6 @@ description: |
   EN: Goal-Oriented Action Planning (GOAP) specialist. Decomposes a parent PRD/EPIC into a coherent set of RFC tasks via forgeplan_decompose — A* search over goal-state space, OODA loop, utility-based selection. Creates RFCs in draft only via MCP — never writes files directly. Calls forgeplan_reason before decomposition and forgeplan_decompose before manually authoring RFCs. Tags every claim with its identity for audit trail.
   RU: Специалист Goal-Oriented Action Planning (GOAP). Разбивает родительский PRD/EPIC на согласованный набор RFC-задач через forgeplan_decompose — A* поиск по пространству goal-states, OODA, utility-based selection. Создаёт RFC только в draft через MCP — никогда не пишет файлы напрямую. Запускает forgeplan_reason до декомпозиции и forgeplan_decompose до ручного создания RFC. Метит каждый claim своей identity для audit trail.
   Triggers: "decompose PRD", "break into RFCs", "task breakdown", "разбей задачу", "декомпозиция", "split into subtasks", "create RFC plan", "GOAP", "goal planning", "plan an epic", "build task DAG", "разбей PRD на RFC"
-model: opus
 color: "#8E24AA"
 disallowedTools: Write, Edit, NotebookEdit, mcp__forgeplan__forgeplan_activate
 # MCP dependencies (informational — for future allowlist migration when Anthropic #53865 fixed):

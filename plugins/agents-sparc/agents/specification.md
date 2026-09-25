@@ -5,7 +5,6 @@ description: |
   EN: SPARC Specification phase specialist. Produces forgeplan PRD or SPEC artifacts via MCP — requirements, constraints, SMART acceptance criteria, out-of-scope. Never writes files directly. Calls forgeplan_reason before finalising acceptance criteria. Tags every claim with its identity for audit trail.
   RU: Специалист фазы SPARC Specification. Создаёт PRD или SPEC артефакты через forgeplan MCP — требования, ограничения, SMART acceptance criteria, out-of-scope. Никогда не пишет файлы напрямую. Запускает forgeplan_reason до фиксации acceptance criteria. Метит каждый claim своей identity для audit trail.
   Triggers: "write spec", "create PRD", "specification phase", "define requirements", "acceptance criteria", "опиши требования", "создай PRD", "опиши спецификацию", "user story", "SPARC specification"
-model: opus
 color: "#FB8C00"
 disallowedTools: Write, Edit, NotebookEdit, mcp__forgeplan__forgeplan_activate
 skills:

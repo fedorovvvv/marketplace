@@ -62,7 +62,7 @@ Everyone else can skip this — agents authored against this guide just *work* w
 ## TL;DR — the canon in 6 lines
 
 1. **`disallowedTools` denylist is the runtime gate** — explicitly block what must not run; everything else is inherited. (B2 canon — `tools:` allowlist broke MCP propagation, see "Why disallowedTools, not tools" section.)
-2. **Model is explicit** — `opus`/`sonnet`/`haiku`, never `inherit` for marketplace agents.
+2. **Model is never pinned** — frontmatter carries no `model:` field; state the tier the work needs in a body `## Model tier` section, where it travels across runtimes.
 3. **Bilingual description** — EN + RU + Triggers, parseable by orchestrator dispatch.
 4. **Body is procedural** — every MCP call mapped to a numbered step. No prose substitutes.
 5. **HARD RULES are first-class** — surface invariants that the denylist cannot enforce (identity tagging, "always call X before Y"). **In a runtime without denylist support that set is *everything*** — see "Denylists are Claude Code-only" below.
@@ -85,7 +85,7 @@ Everyone else can skip this — agents authored against this guide just *work* w
   .forgeplan/<kind>/<ID>.md   +   hindsight bank             ← persistence layer
 ```
 
-The agent's *only* contract with the rest of the system is its frontmatter (what it can call, which model runs it) and its body (when to call what). Everything else is replaceable.
+The agent's *only* contract with the rest of the system is its frontmatter (what it can call) and its body (when to call what, and — via `## Model tier` — what tier of model it needs). Everything else is replaceable.
 
 ---
 
@@ -98,7 +98,6 @@ description: |                         # required, bilingual EN+RU+Triggers (see
   EN: <one paragraph>
   RU: <одно предложение>
   Triggers: "<phrase 1>", "<phrase 2>", "<фраза 3>"
-model: opus | sonnet | haiku           # required, explicit — NEVER inherit
 color: "#RRGGBB"                       # required, hex format (no named colors)
 disallowedTools:                       # required, denylist (B2 canon — NOT tools: allowlist)
   - <tool-name-to-block>
@@ -110,6 +109,9 @@ isolation: worktree                    # optional — Profile C-coder pattern; r
 ---
 ```
 
+No `model:` field — see "model: is a Claude Code binding, not a requirement" below for why, and
+state the tier the agent needs in a `## Model tier` body section instead.
+
 ### Field rules
 
 | Field | Required | Rule | Why |
@@ -117,25 +119,29 @@ isolation: worktree                    # optional — Profile C-coder pattern; r
 | `name` | ✓ | kebab-case, ≤32 chars, matches filename | dispatched as `subagent_type="pack:name"` |
 | `description.EN/RU` | ✓ | imperative, ≤2 sentences each | shown in dispatcher pickers |
 | `description.Triggers` | ✓ | comma-separated quoted phrases | enables fuzzy intent matching by orchestrator |
-| `model` | ✓ | one of `opus`/`sonnet`/`haiku` | cost-aware dispatch (RFC-003 Layer 2) |
 | `color` | ✓ | hex `#RRGGBB` only | UI rendering; named colors break terminals |
 | `disallowedTools` | ✓ | explicit denylist of strings | **runtime gate** — blocks specific tools; all others inherited from parent session. See "Why disallowedTools, not tools" |
 | `skills` | optional | list of `<plugin>:<skill>` identifiers the agent orchestrates | Documents which skills the agent will invoke; helps orchestrator pre-load skill knowledge into agent context. Formalised Sprint W (PRD-050) post-Anomaly #28 schema drift discovery. Used by 18+ canonical agents incl. `adr-architect`, `architecture`, `specification`, `discover`. |
 | `maxTurns` | optional | positive integer (typical 20-80) | Caps agent's autonomous turn budget; prevents runaway loops. Defaults to harness-level cap when omitted. Formalised Sprint W. Used by `coder` (60), `discover` (60), and most agent-pro Profile A/B agents (30-50). |
 | `isolation` | optional | currently only `worktree` | Profile C-coder pattern — runs agent in isolated git worktree to prevent source-file conflicts during parallel dispatch. Used by `agents-core:coder` exclusively. |
 
-### `model` selection heuristic
+### Choosing the tier — the `## Model tier` body section
 
-- **`opus`** — agent makes decisions, runs ADI cycles, judges trade-offs. Examples: `adr-architect`, `pm`, `architect`, `security-expert`, `guardian`.
-- **`sonnet`** — agent does mechanical work that requires structure: scaffolding, drafting, formatting, applying lints. Examples: `tech-writer`, `coder`, `tester`, `research-analyst` (when it summarises rather than reasons).
-- **`haiku`** — agent does fast classification, scanning, simple yes/no. **Ten agents sit here** since the tier rollout (the four hook-triggered advisors, the map-pack scanners, `search-specialist`, `api-docs-engineer`, `project-board-manager`) and **none of them is a reviewer** — that boundary is the point, not an accident: `pii-detector` stays `sonnet` because it writes a Profile B EVID, and `injection-analyst` moved to `opus` on 2026-09-05 because sophistication scoring on hostile input is security-reasoner work.
+Frontmatter carries no `model:` field at all (see "model: is a Claude Code binding, not a
+requirement" below for why) — every agent states the tier its work needs in a `## Model tier`
+section of the body instead, where it travels across runtimes and survives whatever
+model-selection the harness exposes.
 
-Defaulting to `opus` is wasteful; defaulting to `haiku` is unsafe. When in doubt, `sonnet`.
+- **opus-tier work** — the agent makes decisions, runs ADI cycles, judges trade-offs. Examples: `adr-architect`, `architect`, `security-expert`, `guardian`.
+- **sonnet-tier work** — mechanical work that requires structure: scaffolding, drafting, formatting, applying lints. Examples: `coder`, `tester`, `research-analyst` (when it summarises rather than reasons).
+- **haiku-tier work** — fast classification, scanning, simple yes/no. **Ten agents sit here** since the tier rollout (the four hook-triggered advisors, the map-pack scanners, `search-specialist`, `api-docs-engineer`, `project-board-manager`) and **none of them is a reviewer** — that boundary is the point, not an accident: `pii-detector` stays sonnet-tier because it writes a Profile B EVID, and `injection-analyst` moved to opus-tier on 2026-09-05 because sophistication scoring on hostile input is security-reasoner work.
+
+Defaulting high is wasteful; defaulting low is unsafe. When in doubt, sonnet-tier.
 
 Those three bullets describe the *shape* of the work. They do not decide the value — the **tier**
-does, and the mapping from tier to Claude Code name is derived rather than chosen:
+does, and the mapping from tier to a concrete model name is derived rather than chosen:
 
-| Task tier (guide §6.2) | Model tier the ladder asks for | Claude Code binding |
+| Task tier (guide §6.2) | Model tier the ladder asks for | Claude Code equivalent (informational — not a frontmatter binding) |
 |---|---|---|
 | `C` `C+` `C++` | C | `haiku` |
 | `B` `B+` | B / B+ | `sonnet` |
@@ -144,10 +150,10 @@ does, and the mapping from tier to Claude Code name is derived rather than chose
 | `A+` `A++` | A+ / A++ | `opus` |
 
 Read the `A` row carefully: `docs/GUIDE-AI-SDLC-PDLC-RU.md` §6.4 names Claude at exactly two model
-tiers — Opus 5 at A+/A++ and Haiku 4.5 at C. Tiers A and B list no Claude model at all, so in this
-runtime tier A has no exact rung and takes the one above, per the ladder's own instruction to miss
-upward. That is a property of *this* runtime, not of the tier: on a configuration whose tier-A model
-is something else, use that.
+tiers — Opus 5 at A+/A++ and Haiku 4.5 at C. Tiers A and B list no Claude model at all, so on
+Claude Code tier A has no exact rung and takes the one above, per the ladder's own instruction to
+miss upward. That is a property of *this* runtime, not of the tier: a runtime whose tier-A model
+is something else resolves differently, and the agent file does not need to know which.
 
 Two constraints override the table, and both have already corrected a rating here:
 
@@ -161,11 +167,11 @@ Two constraints override the table, and both have already corrected a rating her
    the other C+ agents kept their rating because their risk is *being wrong*, not being talked out
    of a rule.
 
-#### The frontmatter value is a binding; the requirement is a tier
+#### `model:` is a Claude Code binding, not a requirement
 
-`opus` / `sonnet` / `haiku` are **Claude Code's names**. The same agent definition is read by OMP, OpenCode, Codex and Gemini CLI, where those three strings mean nothing and the runtime falls back to whatever its own default is — which may be far below, or far above, what the agent needs. This is the same failure class as two rules already in this guide: **denylists are Claude Code-only, so an invariant that matters must also be a HARD RULE in the body** (marketplace#218), and **write tool names bare, because the `mcp__…__` prefix is per-runtime** (marketplace#212). One shape, three instances: *anything Claude-Code-specific in the frontmatter needs a portable statement in the body.*
+`opus` / `sonnet` / `haiku` are **Claude Code's names**. The same agent definition is read by OMP, OpenCode, Codex and Gemini CLI, where those three strings mean nothing and a pinned frontmatter value would either be ignored or force every other runtime onto Claude Code's vocabulary. This is the same failure class as two rules already in this guide: **denylists are Claude Code-only, so an invariant that matters must also be a HARD RULE in the body** (marketplace#218), and **write tool names bare, because the `mcp__…__` prefix is per-runtime** (marketplace#212). One shape, three instances: *anything Claude-Code-specific belongs in a portable statement in the body, never in the frontmatter.*
 
-So: keep the `model:` field — it is the correct binding for the runtime that reads it — and **state the tier the agent actually needs in a `## Model tier` section of the body**, where it travels.
+So: the frontmatter carries no `model:` field — **state the tier the agent actually needs in a `## Model tier` section of the body**, where it travels and where each runtime's own configuration decides which model serves it.
 
 ```markdown
 ## Model tier
@@ -173,20 +179,23 @@ So: keep the `model:` field — it is the correct binding for the runtime that r
 **Asks for tier B.** <One or two sentences naming the hardest thing the agent does and why that,
 not the most frequent thing, sets the floor.>
 
-Frontmatter `model: sonnet` is the Claude Code binding of this tier. On a runtime without those
-names, substitute the model your configuration puts at the same tier — and if you must miss, miss
-upward: <the concrete consequence of running this agent under-tiered>.
+On Claude Code this tier runs on `sonnet`. On a runtime without named tiers, use whatever your
+configuration puts at the same tier — and if you must miss, miss upward: <the concrete consequence
+of running this agent under-tiered>.
 ```
 
 Rules:
 
 1. **The tier is a property of the work, not of the vendor.** Take it from the nine task tiers in [`docs/GUIDE-AI-SDLC-PDLC-RU.md` §6.2](../../docs/GUIDE-AI-SDLC-PDLC-RU.md) — decided by cost of error × reversibility × presence of an external oracle, not by "feels hard". Do not restate the nine rows here; that ladder is the single source and restating it is how it drifts.
-2. **Which model serves a tier is configuration, decided once** (§6.3 rule 1) — it lives on the operating machine, not in this repository, because it changes faster than any document here and exposes someone's stack.
-3. **One `model:` value covers the whole agent, so the hardest stage decides it — not the most frequent one.** An agent that spends 90% of its turns shuffling tool calls and 10% holding a quality gate is priced by the gate. The behaviours that degrade first under-tier are exactly the load-bearing ones: reporting what was *not* done, refusing to pass a gate on absent proof, declining to guess. Cheap ticks and expensive lies is a bad trade.
-4. **If the cost is real, split the agent — do not downgrade it.** Move the mechanical half into a separate lower-tier agent with no gate authority, and leave the judgement with the original. That is a design change with a visible boundary; lowering `model:` is an invisible one.
+2. **Which model serves a tier is configuration, decided once, on the operating machine** (§6.3 rule 1) — never in this repository and never in the agent's own frontmatter, because that binding changes faster than any document here and exposes someone's stack.
+3. **One tier covers the whole agent, so the hardest stage decides it — not the most frequent one.** An agent that spends 90% of its turns shuffling tool calls and 10% holding a quality gate is priced by the gate. The behaviours that degrade first under-tier are exactly the load-bearing ones: reporting what was *not* done, refusing to pass a gate on absent proof, declining to guess. Cheap ticks and expensive lies is a bad trade.
+4. **If the cost is real, split the agent — do not downgrade it.** Move the mechanical half into a separate lower-tier agent with no gate authority, and leave the judgement with the original. That is a design change with a visible boundary; understating the tier is an invisible one.
 5. **A verifier is never below its generator** (§6.5 rule 2). A reviewer under-tiered relative to the author is a rubber stamp, not a gate.
 
-Not yet enforced by a lint rule: `## Model tier` is present in new agents and absent in most existing ones, so a gate would fail the whole marketplace on day one. Adding the section is the migration; the rule can follow once the set is covered.
+The migration is complete — every marketplace agent now carries a `## Model tier` section and none
+carries a `model:` field. Not yet enforced by a lint rule: LR-1 catches a `model:` field that
+should not be there, but nothing yet fails a body that is missing `## Model tier`. A natural
+follow-up, not added by this pass.
 
 ---
 
@@ -243,7 +252,6 @@ Every forgeplan-aware agent matches **exactly one** profile. The profile dictate
 
 **Frontmatter denylist** (B2 canon — blocks what Profile A must never call; all forgeplan/hindsight read-ops and write-ops are inherited from parent session):
 ```yaml
-model: opus
 color: "#673AB7"
 disallowedTools: Write, Edit, NotebookEdit, mcp__forgeplan__forgeplan_activate
 ```
@@ -251,7 +259,7 @@ disallowedTools: Write, Edit, NotebookEdit, mcp__forgeplan__forgeplan_activate
 - `Write, Edit, NotebookEdit` — forces Profile A to use `forgeplan_new`/`forgeplan_update` via MCP, never direct file writes to `.forgeplan/<kind>/`
 - `forgeplan_activate` — activation is orchestrator/guardian territory (LR-5 invariant); Profile A creates artifacts in `draft` status only
 
-**Default model**: `opus` — creating an artifact involves judging trade-offs.
+**Model tier**: opus-tier — creating an artifact involves judging trade-offs. State it in the body's `## Model tier` section.
 
 > **Optional Step 10** — after releasing the claim, Profile A creators may save a structured lesson to Hindsight. See "Step 10 (optional, Profile A only)" in the canonical procedure section below.
 
@@ -265,7 +273,6 @@ disallowedTools: Write, Edit, NotebookEdit, mcp__forgeplan__forgeplan_activate
 
 **Frontmatter denylist** (B2 canon — blocks what Profile B must never call; all read-ops and EVID-write-ops are inherited from parent session):
 ```yaml
-model: sonnet  # or opus for security/architecture reviewers
 color: "#1976D2"
 disallowedTools: Write, Edit, NotebookEdit, mcp__forgeplan__forgeplan_activate, mcp__forgeplan__forgeplan_reason, mcp__forgeplan__forgeplan_claims, <the memory-write set — see above; do not retype it from here>
 ```
@@ -276,7 +283,7 @@ disallowedTools: Write, Edit, NotebookEdit, mcp__forgeplan__forgeplan_activate, 
 - `forgeplan_claims` — Profile B claims one specific artifact; no sibling-exploration needed
 - `memory_retain` — auto-hooks (Stop/SessionEnd) handle Hindsight; the EVID artifact is the canonical audit record
 
-**Default model**: `sonnet` for mechanical reviewers (lint-style: `code-reviewer`, `tester`), `opus` for reasoning reviewers (architecture, security: `security-expert`, `architect-reviewer`).
+**Model tier**: sonnet-tier for mechanical reviewers (lint-style: `code-reviewer`, `tester`), opus-tier for reasoning reviewers (architecture, security: `security-expert`, `architect-reviewer`). State it in the body's `## Model tier` section.
 
 **Profile B universal HARD RULES** (lifted from batch-2 audit — bake these into every Profile B agent body):
 
@@ -315,14 +322,13 @@ Authors may override when their domain demands different priors — document the
 
 **Frontmatter denylist** (B2 canon — blocks all mutation tools; read-ops and WebFetch/Search are inherited):
 ```yaml
-model: sonnet
 color: "#388E3C"
 disallowedTools: Write, Edit, NotebookEdit, Bash, mcp__forgeplan__forgeplan_new, mcp__forgeplan__forgeplan_update, mcp__forgeplan__forgeplan_link, mcp__forgeplan__forgeplan_validate, mcp__forgeplan__forgeplan_activate, mcp__forgeplan__forgeplan_reason, mcp__forgeplan__forgeplan_claim, mcp__forgeplan__forgeplan_release, <the memory-write set — see above; do not retype it from here>
 ```
 
 If the agent thinks it needs to write, it should hand findings to a Profile A/B agent via the orchestrator instead.
 
-**Default model**: `sonnet` (summarisation) or `haiku` (single-keyword scan).
+**Model tier**: sonnet-tier (summarisation) or haiku-tier (single-keyword scan). State it in the body's `## Model tier` section.
 
 ### Profile D — Maintainer (NEW)
 
@@ -345,7 +351,7 @@ If the agent thinks it needs to write, it should hand findings to a Profile A/B 
 6. **Never** touch artifacts >90 days old without explicit instruction (history rewrite risk)
 7. **Never** semantic rewrite — use `forgeplan_supersede` if change is fundamental
 
-**Default model**: `sonnet` — mechanical fixes don't need opus judgment.
+**Model tier**: sonnet-tier — mechanical fixes don't need opus-tier judgment. State it in the body's `## Model tier` section.
 
 **Step count**: 7 (claim → get → recall → apply → validate → score → release).
 
@@ -354,7 +360,6 @@ If the agent thinks it needs to write, it should hand findings to a Profile A/B 
 A narrow exception: `coder`, `typescript-pro`, `golang-pro`, etc. — agents that write **source code**, not artifacts. This profile DOES have `Write`/`Edit`/`NotebookEdit` allowed (for source files under `src/`) — only forgeplan/hindsight mutations are denied:
 
 ```yaml
-model: sonnet
 color: "#388E3C"
 disallowedTools: mcp__forgeplan__forgeplan_new, mcp__forgeplan__forgeplan_update, mcp__forgeplan__forgeplan_link, mcp__forgeplan__forgeplan_activate, mcp__forgeplan__forgeplan_supersede, mcp__forgeplan__forgeplan_deprecate, mcp__forgeplan__forgeplan_reason, <the memory-write set — see above; do not retype it from here>
 # Write/Edit/Bash are NOT denied — coder writes source files.
@@ -734,9 +739,9 @@ python3 -c "
 import re, yaml, sys
 text = open('plugins/<pack>/agents/<name>.md').read()
 fm = yaml.safe_load(re.match(r'^---\n(.*?)\n---', text, re.S).group(1))
-for k in ['name','description','model','color','disallowedTools']:
+for k in ['name','description','color','disallowedTools']:
     assert k in fm, f'missing {k}'
-assert fm['model'] in ('opus','sonnet','haiku'), f'bad model {fm[\"model\"]}'
+assert 'model' not in fm, 'model: pinned in frontmatter -- remove it, state the tier in a body ## Model tier section instead'
 # disallowedTools may be a list OR a comma-separated string
 dt = fm['disallowedTools']
 assert isinstance(dt, (list, str)) and dt, 'disallowedTools must be non-empty'
@@ -767,7 +772,7 @@ A canonical-pattern lint rule will be added to `validate-all-plugins.sh` once th
 
 ### Profile A — `adr-architect` (reference implementation)
 
-See `forgeplan-marketplace/plugins/agents-pro/agents/adr-architect.md` (v1.1, 16 tools, model=opus, MADR 3.0 template inlined). EVID-040 documents the migration audit.
+See `forgeplan-marketplace/plugins/agents-pro/agents/adr-architect.md` (v1.1, 16 tools, opus-tier per its `## Model tier` body section, MADR 3.0 template inlined). EVID-040 documents the migration audit.
 
 ### Profile B — `code-reviewer` (sketch)
 
@@ -778,7 +783,6 @@ description: |
   EN: Reviews code diffs and produces EVIDENCE with verdict (pass/concerns/blocker) + findings.
   RU: Ревьюит diff и пишет EVIDENCE с verdict + findings.
   Triggers: "review this PR", "code review", "ревью кода"
-model: sonnet
 color: "#E53935"
 disallowedTools: Write, Edit, NotebookEdit, mcp__forgeplan__forgeplan_activate, mcp__forgeplan__forgeplan_reason, mcp__forgeplan__forgeplan_claims, <the memory-write set — see above; do not retype it from here>
 ---
@@ -799,7 +803,6 @@ description: |
   EN: Gathers external + internal context, returns synthesis. Read-only.
   RU: Собирает внешний и внутренний контекст, возвращает синтез. Read-only.
   Triggers: "research", "compare alternatives", "найди prior art"
-model: sonnet
 color: "#1E88E5"
 disallowedTools: Write, Edit, NotebookEdit, Bash, mcp__forgeplan__forgeplan_new, mcp__forgeplan__forgeplan_update, mcp__forgeplan__forgeplan_link, mcp__forgeplan__forgeplan_validate, mcp__forgeplan__forgeplan_activate, mcp__forgeplan__forgeplan_reason, mcp__forgeplan__forgeplan_claim, mcp__forgeplan__forgeplan_release, <the memory-write set — see above; do not retype it from here>
 ---
@@ -814,7 +817,7 @@ Body procedure: clarify question → recall + reflect → search artifacts via `
 When migrating an existing agent from generic v1.0 to canonical v2.0:
 
 - [ ] Pick the profile (A / B / C / C-coder)
-- [ ] Replace `model: inherit` with explicit `opus`/`sonnet`/`haiku`
+- [ ] Remove any `model:` field (never pin one — state the tier in a body `## Model tier` section instead)
 - [ ] Replace `description: <single line>` with bilingual EN+RU+Triggers
 - [ ] Replace `color: red` (named) with hex `#RRGGBB`
 - [ ] Replace `tools:` allowlist (v1.0 / B1 paradigm) with `disallowedTools:` denylist using the profile-specific blocked set (B2 canon)

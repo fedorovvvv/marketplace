@@ -43,6 +43,6 @@ The denylist is one layer of several, not the whole wall. A lint rule enforces t
 ## Related
 
 - `profiles.md` — the exact denied set per profile, and the C-coder inversion
-- `frontmatter.md` — the `disallowedTools` field rules and the model field
+- `frontmatter.md` — the `disallowedTools` field rules, and why there is no `model` field
 - `examples.md` — denylists from real `coder` and `guardian` agents
 - `../mcp/gotchas.md` — MCP propagation gotchas and debugging

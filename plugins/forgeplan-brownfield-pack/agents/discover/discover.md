@@ -4,7 +4,6 @@ description: |
   EN: Brownfield codebase onboarding — analyzes existing projects via canonical 7-phase MCP discovery protocol with tiered source priority (code > extracted > docs). Wraps forgeplan_discover_* MCP surface. Produces structured forgeplan graph (NOTE/PRD/PROBLEM/EVIDENCE artifacts) covering tech stack, modules, data stores, infra, git history, tests, docs synthesis.
   RU: Brownfield агент для онбординга легаси кодбейзов через канонический 7-phase MCP discovery протокол. Оборачивает forgeplan_discover_* MCP. Производит структурированный граф NOTE/PRD/PROBLEM/EVIDENCE по фазам tech stack / modules / data / infra / git / tests / docs.
   Triggers: "discover codebase", "brownfield onboarding", "map existing project", "проанализируй проект", "исследуй кодбейз", "discover brownfield", "tech stack discovery", "module map", "extract from legacy code", "/discover"
-model: opus
 color: "#2563EB"
 disallowedTools:
   - Write

@@ -4,7 +4,6 @@ description: |
   EN: Code quality analysis specialist performing comprehensive reviews across five domains — quality, performance, security, architecture, and technical debt. Use when you need a structured codebase audit, severity-ranked findings report, or pre-refactor baseline assessment. Produces actionable reports with file paths and specific fix suggestions. Hand off to `code-reviewer` for PR-level review or to `security-expert` for deep vulnerability analysis.
   RU: Специалист по анализу качества кода, выполняющий комплексные проверки в пяти областях — качество, производительность, безопасность, архитектура и технический долг. Используйте когда нужен структурированный аудит кодовой базы, отчёт о проблемах по степени серьёзности или базовая оценка перед рефакторингом. Передайте `code-reviewer` для проверки PR или `security-expert` для глубокого анализа уязвимостей.
   Triggers: "code analysis", "code quality", "code review", "technical debt", "codebase audit", "code smells", "static analysis", "code health", "анализ кода", "качество кода", "технический долг", "аудит кодовой базы"
-model: sonnet
 tools: [Read, Write, Edit, Bash, Glob, Grep]
 color: '#3949AB'
 ---

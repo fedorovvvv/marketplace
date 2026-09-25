@@ -5,7 +5,6 @@ description: |
   EN: Generic Profile A creator for any forgeplan artifact kind. Primary path uses forgeplan_generate (LLM-fill via configured provider). Fallback path uses forgeplan_new scaffold + agent fills body following AGENT-AUTHORING-GUIDE patterns. Use when no kind-specialist exists (e.g., for PROBLEM, SOLUTION, REFRESH) or when bulk artifact creation needed.
   RU: Generic Profile A создатель для любого kind forgeplan artifact. Primary path — forgeplan_generate (LLM генерация). Fallback — forgeplan_new + agent fills body сам. Используется когда нет kind-specialist (problem/solution/refresh) или для bulk creation.
   Triggers: "create artifact", "draft prd", "draft rfc", "create problem", "create solution", "generate evidence", "создай артефакт", "сгенерируй prd"
-model: opus
 color: "#00ACC1"
 disallowedTools: Write, Edit, NotebookEdit, mcp__forgeplan__forgeplan_activate
 # MCP dependencies (informational — for future allowlist migration when Anthropic #53865 fixed):

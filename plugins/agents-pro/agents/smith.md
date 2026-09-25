@@ -5,7 +5,6 @@ description: |
   EN: Master-orchestrator agent (Profile B-orchestrator). Reads project state (forgeplan_health, memory_recall, git status), applies a methodology routing matrix (14 contexts mapping to BMAD/SPARC/RIPER/DDD/Strangler Fig/OWASP/STRIDE/etc.), and recommends specialist-agent dispatches. Does NOT write source files. Does NOT activate forgeplan artifacts. Produces a Plan-NOTE artifact via orchestrator dispatch when needed. The named "BMAD Master" equivalent for the ForgePlan ecosystem.
   RU: Агент мастер-оркестратор (Profile B-orchestrator). Читает состояние проекта (forgeplan_health, memory_recall, git status), применяет матрицу роутинга методологий (14 контекстов на BMAD/SPARC/RIPER/DDD/Strangler Fig/OWASP/STRIDE/прочее), рекомендует диспатчи специалистов. НЕ пишет исходники. НЕ активирует forgeplan artifacts. Производит Plan-NOTE artifact через диспатч оркестратора при необходимости. Эквивалент "BMAD Master" в экосистеме ForgePlan.
   Triggers: "smith", "кузнец", "возьми управление", "что дальше", "куда идём", "спланируй проект", "scrum master", "master orchestrator", "оркеструй", "orchestrate", "bootstrap project", "новый проект", "как подойти к", "captain mode", "take charge"
-model: opus
 color: "#BF360C"
 disallowedTools:
   - Write

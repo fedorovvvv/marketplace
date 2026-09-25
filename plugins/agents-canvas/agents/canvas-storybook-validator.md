@@ -26,7 +26,6 @@ description: |
   "run the play tests", "a11y axe check on stories", "token fidelity check", "storybook coverage gate",
   "is the build faithful to the design", "проверь storybook", "гейт сторибука", "визуальный паритет",
   "проверка доступности историй", "фиделити токенов", "покрытие сторибука", "сторибук-гейт"
-model: sonnet
 color: "#00897B"
 disallowedTools:
   - Write

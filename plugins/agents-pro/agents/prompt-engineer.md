@@ -4,7 +4,6 @@ description: |
   EN: Expert prompt engineer specializing in designing, optimizing, and evaluating prompts for LLMs — prompt patterns (zero-shot, few-shot, CoT, ReAct), token optimization, safety mechanisms, and A/B testing frameworks. Use when crafting system prompts for production AI features, optimizing cost/quality trade-offs in prompt templates, or building evaluation frameworks. Hand off to `injection-analyst` for security hardening or to `ml-developer` for model fine-tuning decisions.
   RU: Эксперт-инженер по промптам, специализирующийся на проектировании, оптимизации и оценке промптов для LLM — паттерны промптов (zero-shot, few-shot, CoT, ReAct), оптимизация токенов, механизмы безопасности и фреймворки A/B-тестирования. Используйте при создании системных промптов для production AI-функций, оптимизации компромиссов стоимость/качество в шаблонах промптов или создании фреймворков оценки. Передайте `injection-analyst` для усиления безопасности или `ml-developer` для решений по дообучению модели.
   Triggers: "prompt engineering", "prompt design", "system prompt", "few-shot", "chain-of-thought", "CoT", "ReAct", "prompt optimization", "token optimization", "LLM prompt", "prompt template", "prompt A/B testing", "инженерия промптов", "оптимизация промптов", "системный промпт"
-model: sonnet
 tools: [Read, Write, Edit, Bash, Glob, Grep]
 color: '#00ACC1'
 ---

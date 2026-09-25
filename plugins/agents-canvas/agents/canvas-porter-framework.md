@@ -35,7 +35,6 @@ description: |
   Triggers: "spread to frameworks", "port to react vue svelte angular solid", "framework wrappers",
   "wrap the web components", "parity tests", "обёртки фреймворков", "перенеси компоненты в react vue",
   "parity-тесты по фреймворкам"
-model: sonnet
 color: "#00838F"
 disallowedTools:
   - mcp__forgeplan__forgeplan_new

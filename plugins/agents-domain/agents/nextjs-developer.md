@@ -4,7 +4,6 @@ description: |
   EN: Senior Next.js 14+ developer specializing in App Router, server components, server actions, and ISR/PPR rendering strategies. Use when building full-stack Next.js apps — data fetching patterns, SEO with Metadata API, performance (Core Web Vitals), and Vercel/Docker deployment. Hand off to `typescript-pro` for complex type work or `security-expert` for auth middleware and API route security.
   RU: Старший разработчик Next.js 14+, специализирующийся на App Router, серверных компонентах, server actions и стратегиях рендеринга ISR/PPR. Используй при создании полностекового Next.js приложения — паттерны получения данных, SEO через Metadata API, производительность (Core Web Vitals), деплой на Vercel/Docker. Передавай `typescript-pro` для сложной типизации или `security-expert` для безопасности auth middleware и API-роутов.
   Triggers: "Next.js", "App Router", "server components", "server actions", "nextjs", "next/image", "next/font", "Next.js разработка", "серверные компоненты"
-model: sonnet
 tools: [Read, Write, Edit, Bash, Glob, Grep]
 color: '#000000'
 ---

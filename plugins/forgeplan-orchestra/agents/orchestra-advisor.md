@@ -4,7 +4,6 @@ description: |
   EN: Background advisor that suggests Orchestra task sync actions when Forgeplan commands are used. HOOK-triggered after forgeplan CLI output — proposes creating/updating Orchestra tasks to mirror artifact lifecycle. Non-blocking: all suggestions are optional, never acted on autonomously.
   RU: Фоновый советник, предлагающий синхронизацию задач Orchestra при использовании команд Forgeplan. Активируется через HOOK после вывода CLI — предлагает создать или обновить задачи Orchestra в соответствии с жизненным циклом артефактов. Не блокирующий: все предложения опциональны, автономных действий не выполняет.
   Triggers: "forgeplan new", "forgeplan activate", "forgeplan validate", "orchestra sync", "task tracking", "session start", "синхронизация задач", "отслеживание артефактов"
-model: haiku
 color: '#78909C'
 ---
 

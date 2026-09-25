@@ -4,7 +4,6 @@ description: |
   EN: Senior TypeScript 5.0+ developer specializing in advanced type system features (conditional types, mapped types, branded types, variance) and full-stack type safety (tRPC, codegen, Zod). Use when building or refactoring TypeScript codebases, configuring strict tsconfig, or optimizing build performance in monorepos. Hand off to `typescript-type-auditor` for a dedicated type-coverage audit pass.
   RU: Старший TypeScript 5.0+ разработчик, специализирующийся на продвинутых возможностях системы типов (условные типы, mapped types, branded types, variance) и сквозной типобезопасности (tRPC, codegen, Zod). Используй при создании или рефакторинге TypeScript-кодовых баз, настройке строгого tsconfig или оптимизации сборки в монорепозиториях. Передавай `typescript-type-auditor` для выделенного аудита покрытия типами.
   Triggers: "TypeScript", "tsconfig", "type safety", "tRPC", "branded types", "generic types", "TypeScript refactor", "TypeScript монорепо", "строгая типизация", "типы TypeScript"
-model: sonnet
 tools: [Read, Write, Edit, Bash, Glob, Grep]
 color: '#3178C6'
 ---

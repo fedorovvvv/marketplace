@@ -4,7 +4,6 @@ description: |
   EN: MCP developer specializing in Model Context Protocol server and client implementation — JSON-RPC 2.0, TypeScript/Python SDKs, tool/resource/prompt definitions, transport configuration (stdio/SSE), and production deployment. Use when building or extending MCP servers, debugging protocol compliance issues, or designing tool schemas for AI integration. Hand off to `api-docs-engineer` for documenting the MCP server's tool surface or to `security-expert` for remote transport hardening.
   RU: Разработчик MCP, специализирующийся на реализации серверов и клиентов Model Context Protocol — JSON-RPC 2.0, SDK для TypeScript/Python, определения инструментов/ресурсов/промптов, конфигурация транспорта (stdio/SSE) и production-развёртывание. Используйте при создании или расширении MCP-серверов, отладке проблем соответствия протоколу или проектировании схем инструментов для AI-интеграции. Передайте `api-docs-engineer` для документирования инструментов MCP-сервера или `security-expert` для защиты удалённого транспорта.
   Triggers: "MCP", "Model Context Protocol", "MCP server", "MCP client", "mcp tool", "mcp resource", "mcp prompt", "JSON-RPC", "MCP SDK", "MCP transport", "stdio transport", "SSE transport", "MCP сервер", "интеграция MCP"
-model: sonnet
 tools: [Read, Write, Edit, Bash, Glob, Grep]
 color: '#FF6D00'
 ---

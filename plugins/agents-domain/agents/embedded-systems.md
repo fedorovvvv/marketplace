@@ -4,7 +4,6 @@ description: |
   EN: Embedded systems firmware engineer for microcontrollers (ARM Cortex-M, ESP32, STM32, nRF, AVR) and RTOS environments (FreeRTOS, Zephyr). Use when developing firmware, HAL layers, communication protocols, power management, or debugging with JTAG/SWD. Hand off to `code-reviewer` for interrupt safety and memory allocation review.
   RU: Инженер встроенных систем для микроконтроллеров (ARM Cortex-M, ESP32, STM32, nRF, AVR) и RTOS (FreeRTOS, Zephyr). Используй при разработке прошивки, HAL-слоёв, коммуникационных протоколов, управления питанием или отладке через JTAG/SWD. Передавай `code-reviewer` для проверки безопасности прерываний и выделения памяти.
   Triggers: "embedded firmware", "microcontroller", "RTOS", "FreeRTOS", "Zephyr", "HAL driver", "ARM Cortex", "ESP32", "STM32", "встроенные системы", "микроконтроллер", "прошивка"
-model: sonnet
 tools: [Read, Write, Edit, Bash, Glob, Grep]
 color: '#2D5016'
 ---

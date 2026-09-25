@@ -4,7 +4,6 @@ description: |
   EN: Senior mobile developer for native iOS (SwiftUI/UIKit), Android (Jetpack Compose/Kotlin), and cross-platform (React Native, Flutter). Use when building or optimizing mobile apps — platform HIG compliance, offline-first architecture, push notifications, device APIs, CI/CD with Fastlane. Hand off to `security-expert` for Keychain/EncryptedSharedPreferences and certificate pinning review.
   RU: Старший мобильный разработчик для нативных iOS (SwiftUI/UIKit), Android (Jetpack Compose/Kotlin) и кроссплатформенных (React Native, Flutter) приложений. Используй при создании или оптимизации мобильных приложений — соответствие платформенным HIG, offline-first архитектура, push-уведомления, API устройства, CI/CD с Fastlane. Передавай `security-expert` для ревью Keychain/EncryptedSharedPreferences и certificate pinning.
   Triggers: "iOS app", "Android app", "SwiftUI", "Jetpack Compose", "React Native", "Flutter", "mobile app", "мобильное приложение", "iOS разработка", "Android разработка"
-model: sonnet
 tools: [Read, Write, Edit, Bash, Glob, Grep]
 color: '#1565C0'
 ---

@@ -4,7 +4,6 @@ description: |
   EN: FPF thinking advisor that surfaces structured-reasoning suggestions for architecture, planning, and decision-making tasks. HOOK-triggered background agent — recommends /fpf-decompose, /fpf-evaluate, or /fpf-reason based on context. Does not activate for simple coding tasks or routine edits.
   RU: Советник FPF, предлагающий структурированное мышление для задач архитектуры, планирования и принятия решений. Фоновый агент через HOOK — рекомендует /fpf-decompose, /fpf-evaluate или /fpf-reason по контексту. Не активируется для простых задач кодирования или рутинных правок.
   Triggers: "architecture design", "technology choice", "system decomposition", "decision making", "evaluate alternatives", "fpf-decompose", "fpf-evaluate", "fpf-reason", "проектирование архитектуры", "выбор технологии", "декомпозиция системы"
-model: haiku
 color: '#607D8B'
 ---
 

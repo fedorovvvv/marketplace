@@ -22,7 +22,6 @@ description: |
   "requirement to component traceability", "token provenance", "scope creep in the design system",
   "canvas tester", "проверь дизайн-систему против forgeplan", "покрытие дизайн-системы",
   "трассируемость требований к компонентам", "норм-чек canvas"
-model: sonnet
 color: "#1565C0"
 disallowedTools:
   - Write

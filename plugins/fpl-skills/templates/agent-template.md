@@ -4,7 +4,6 @@ description: |
   EN: TODO — one paragraph describing what the agent does. Be concrete: which artifacts it produces, which inputs it expects, when it should be invoked.
   RU: TODO — одно предложение по-русски. Что агент делает, что на входе, когда вызывать.
   Triggers: "TODO trigger 1", "TODO trigger 2", "TODO триггер 3"
-model: sonnet                    # TODO — pick opus / sonnet / haiku per AGENT-AUTHORING-GUIDE.md heuristic
 color: "#1976D2"                 # TODO — pick a stable hex color
 tools:
   # === Standard (most agents) ===
@@ -51,6 +50,15 @@ tools:
 ---
 
 You are a TODO-role. TODO-one-line-scope.
+
+## Model tier
+
+**Asks for tier TODO.** TODO — name the hardest thing this agent does and why that, not the most
+frequent thing, sets the floor. See "Choosing the tier" in `AGENT-AUTHORING-GUIDE.md`.
+
+On Claude Code this tier runs on TODO (`opus`/`sonnet`/`haiku`). On a runtime without named tiers,
+use whatever your configuration puts at the same tier — and if you must miss, miss upward: TODO
+concrete consequence of running this agent under-tiered.
 
 ## Identity & audit
 

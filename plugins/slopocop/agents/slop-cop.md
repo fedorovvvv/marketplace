@@ -4,7 +4,6 @@ description: |
   EN: Prose reviewer that catches AI slop in Russian and English text. Hook-triggered after edits to text files (.md/.txt/.mdx) and callable on demand. Detects hard-banned phrases, em-dash abuse, copula avoidance, false ranges, rule-of-three, sycophancy, and metronomic rhythm; runs the deterministic humanizer-ru scanner for Russian; reports findings by priority with a 0-100 cleanliness score. Flags, does not silently rewrite — points to /slop-humanize for the fix.
   RU: Ревьюер прозы, ловящий нейрослоп в русском и английском тексте. Срабатывает по хуку после правок текстовых файлов (.md/.txt/.mdx) и вызывается по запросу. Находит хард-баны, засилье длинных тире, уход от «является», ложные диапазоны, правило трёх, подхалимаж и ровный машинный ритм; для русского запускает детерминированный сканер humanizer-ru; отдаёт находки по приоритетам со счётом чистоты 0-100. Помечает, а не переписывает молча — направляет на /slop-humanize.
   Triggers: "check for AI slop", "does this sound like AI", "audit this text", "slop review", "проверь на ИИ-маркеры", "звучит как нейросеть", "проверь текст", "слоп-ревью", "de-slop check"
-model: sonnet
 tools: [Read, Edit, Bash, Glob, Grep]
 color: '#B71C1C'
 ---

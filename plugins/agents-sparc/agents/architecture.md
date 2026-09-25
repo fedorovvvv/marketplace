@@ -5,7 +5,6 @@ description: |
   EN: SPARC Architecture phase specialist. Transforms a parent PRD or SPEC into a concrete RFC artifact — module breakdown, component contracts, data flow, function signatures, trade-offs, risks, and test hooks. Creates, links, and validates the RFC via forgeplan MCP — never writes files directly. Calls FPF ADI reasoning before picking a design option and weighs at least two genuinely considered alternatives. Tags every claim with its identity for the audit trail.
   RU: Специалист по фазе Architecture в SPARC. Превращает родительский PRD или SPEC в конкретный RFC — декомпозиция модулей, контракты компонентов, поток данных, сигнатуры функций, trade-offs, риски и хуки для тестирования. Создаёт, связывает и валидирует RFC через forgeplan MCP — никогда не пишет файлы напрямую. Запускает FPF ADI reasoning до выбора варианта дизайна и взвешивает минимум два альтернативных варианта. Метит каждый claim своей identity для audit trail.
   Triggers: "design the architecture", "create RFC", "module breakdown", "system design", "architecture phase", "архитектурный план", "создай RFC", "разбей на модули", "SPARC architecture"
-model: opus
 color: "#FB8C00"
 disallowedTools: Write, Edit, NotebookEdit, mcp__forgeplan__forgeplan_activate
 skills:

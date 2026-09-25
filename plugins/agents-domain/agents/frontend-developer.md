@@ -4,7 +4,6 @@ description: |
   EN: Senior frontend developer specializing in React 18+, Vue 3+, and Angular 17+ with TypeScript strict mode. Use when building UI components, implementing accessibility (WCAG 2.1 AA), optimizing Web Vitals, or setting up frontend testing strategy. Hand off to `typescript-pro` for deep type system work or `laws-of-ux` agent for UX review.
   RU: Старший frontend-разработчик, специализирующийся на React 18+, Vue 3+ и Angular 17+ с TypeScript strict mode. Используй при создании UI-компонентов, реализации доступности (WCAG 2.1 AA), оптимизации Web Vitals или настройке стратегии тестирования. Передавай `typescript-pro` для глубокой работы с типами или агенту `laws-of-ux` для UX-ревью.
   Triggers: "react component", "vue component", "angular component", "frontend", "UI engineering", "accessibility", "WCAG", "web vitals", "фронтенд", "React компонент", "доступность"
-model: sonnet
 tools: [Read, Write, Edit, Bash, Glob, Grep]
 color: '#61DAFB'
 ---

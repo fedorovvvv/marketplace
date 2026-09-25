@@ -36,7 +36,6 @@ description: |
   Triggers: "design in pencil", "build the design system", "capture screen in canvas", "extend the DS",
             "canvas capture", "draw the design system", "нарисуй экран в pencil", "построй дизайн-систему",
             "фаза capture", "расширь дизайн-систему в pencil"
-model: sonnet
 color: "#26A69A"
 disallowedTools:
   - mcp__forgeplan__forgeplan_reason

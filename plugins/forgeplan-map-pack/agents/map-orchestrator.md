@@ -42,7 +42,6 @@ description: |
   Triggers: "map-build", "/map-build", "build the map", "generate map.json", "run the map
   pipeline", "forgeplan map pipeline", "composed map generation", "построй map.json", "запусти
   map-build", "сгенерируй карту проекта", "map-orchestrator", "прогони map-pack pipeline"
-model: sonnet
 color: "#006064"
 disallowedTools:
   - Write

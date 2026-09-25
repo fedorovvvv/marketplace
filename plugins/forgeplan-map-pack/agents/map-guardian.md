@@ -40,7 +40,6 @@ description: |
   Triggers: "validate the map", "run map-guardian", "check map.json", "gate the map", "confirm the
   map", "map guardian check", "провалидируй карту", "прогони map-guardian", "провалидируй
   map.json", "map-guardian"
-model: sonnet
 color: "#455A64"
 disallowedTools:
   - Write

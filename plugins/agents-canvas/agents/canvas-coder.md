@@ -25,7 +25,6 @@ description: |
   Triggers: "assemble the storybook", "build the components", "implement the components",
   "write the stories", "visual regression tests", "code the design system", "собери storybook",
   "реализуй компоненты", "напиши визуальные тесты"
-model: sonnet
 color: "#2E7D32"
 disallowedTools:
   - mcp__forgeplan__forgeplan_new

@@ -4,7 +4,6 @@ description: |
   EN: Design reviewer that catches AI-slop in UI code — the templated, generated-looking tells that make a page read as machine-made. Callable on demand (no hook — laws-of-ux already nudges on frontend edits). Runs hallmark's 58-gate slop-test against HTML/CSS/JSX/TSX/Vue/Svelte, flags default fonts, generic hero→3-feature→CTA rhythm, italic headers, invented metrics, re-drawn chrome, and mobile failures, and reports a ranked punch list with the pre-emit critique scores. Flags, does not silently redesign — points to /design-redesign for the fix.
   RU: Ревьюер дизайна, ловящий ИИ-слоп в UI-коде — шаблонные, «сгенерированные» признаки, из-за которых страница выглядит машинной. Вызывается по запросу (без хука — laws-of-ux уже подсказывает на правках фронтенда). Прогоняет 58-гейтный slop-test hallmark по HTML/CSS/JSX/TSX/Vue/Svelte, помечает дефолтные шрифты, шаблонный ритм hero→3-фичи→CTA, курсивные заголовки, выдуманные метрики, перерисованный chrome и мобильные провалы, отдаёт ранжированный список с оценками pre-emit critique. Помечает, а не переделывает молча — направляет на /design-redesign.
   Triggers: "does this look AI-generated", "design slop check", "audit this UI", "why does this look generic", "review the landing page", "проверь дизайн на слоп", "выглядит шаблонно", "почему выглядит как ИИ", "ревью лендинга", "design cop"
-model: sonnet
 tools: [Read, Edit, Bash, Glob, Grep]
 color: '#6A1B9A'
 ---

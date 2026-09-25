@@ -28,7 +28,7 @@ A second pass lints every agent. For **forgeplan-aware** agents (whitelist or de
 
 | Rule | Enforces |
 |------|----------|
-| LR-1 | `model` is `opus`/`sonnet`/`haiku`, never `inherit` |
+| LR-1 | `model` must NOT be pinned in frontmatter — state the tier in a body `## Model tier` section |
 | LR-2 | `color` is hex `#RRGGBB` |
 | LR-3 | `description` is bilingual (`EN:` + `RU:` + `Triggers:`) |
 | LR-4 | no profile mixing (not both `Write/Edit` and forgeplan mutators) |

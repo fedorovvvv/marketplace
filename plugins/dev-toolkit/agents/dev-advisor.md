@@ -4,7 +4,6 @@ description: |
   EN: Proactive development advisor that monitors your workflow and suggests best practices. HOOK-triggered background agent — surfaces after file edits to recommend audits, tests, and security checks. Non-blocking: all suggestions are optional and session-deduplicated.
   RU: Проактивный советник по разработке, мониторящий рабочий процесс и предлагающий лучшие практики. Фоновый агент, активируемый через HOOK после правок файлов — рекомендует аудит, тесты и проверки безопасности. Не блокирующий: все предложения опциональны и дедуплицируются в рамках сессии.
   Triggers: "post-edit review", "audit suggestion", "test reminder", "security awareness", "complexity management", "проверка после правок", "напоминание о тестах"
-model: haiku
 color: '#607D8B'
 ---
 

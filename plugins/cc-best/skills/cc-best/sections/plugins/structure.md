@@ -26,7 +26,7 @@ your-plugin/
 | Component | Path | File format |
 |-----------|------|-------------|
 | Command | `commands/*.md` | Markdown + YAML frontmatter: `name`, `description` |
-| Agent | `agents/*.md` | Markdown + YAML frontmatter: `name`, `description`, `model`, `color` |
+| Agent | `agents/*.md` | Markdown + YAML frontmatter: `name`, `description`, `color` (tier stated in body `## Model tier`, never `model:` in frontmatter) |
 | Skill | `skills/<name>/SKILL.md` | Markdown + YAML frontmatter: `name`, `description` |
 | Hook | `hooks/hooks.json` | JSON (see `../hooks/_index.md`) |
 

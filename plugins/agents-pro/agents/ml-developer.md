@@ -4,7 +4,6 @@ description: |
   EN: ML developer specializing in end-to-end machine learning workflows — data preprocessing, model selection, cross-validation, hyperparameter tuning, evaluation, and deployment preparation using scikit-learn, pandas, and deep learning frameworks. Use when building or auditing an ML pipeline, selecting algorithms, preventing data leakage, or preparing a model for production serving. Hand off to `memory-specialist` for embedding/vector store optimization or to `platform-engineer` for ML serving infrastructure.
   RU: Разработчик ML, специализирующийся на сквозных рабочих процессах машинного обучения — предобработка данных, выбор модели, кросс-валидация, настройка гиперпараметров, оценка и подготовка к развёртыванию с использованием scikit-learn, pandas и фреймворков глубокого обучения. Используйте при создании или аудите конвейера ML, выборе алгоритмов, предотвращении утечки данных или подготовке модели к production-обслуживанию. Передайте `memory-specialist` для оптимизации эмбеддингов/векторного хранилища или `platform-engineer` для ML-инфраструктуры обслуживания.
   Triggers: "machine learning", "ML", "scikit-learn", "model training", "hyperparameter tuning", "data preprocessing", "model evaluation", "classification", "regression", "ML pipeline", "deep learning", "machine learning workflow", "машинное обучение", "обучение модели", "предобработка данных"
-model: sonnet
 tools: [Read, Write, Edit, Bash, Glob, Grep]
 color: '#7B1FA2'
 ---

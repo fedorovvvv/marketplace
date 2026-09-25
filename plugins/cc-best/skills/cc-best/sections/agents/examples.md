@@ -7,12 +7,13 @@ Two production agents from the marketplace, dissected. `coder` is a Profile C-co
 `plugins/agents-core/agents/coder.md`. The only agent allowed to write source files.
 
 ```yaml
-model: sonnet                        # mechanical work, not judgement
 color: "#00897B"
 disallowedTools: mcp__forgeplan__forgeplan_new, ...update, ...link, ...activate, ...
 isolation: worktree                  # isolated git worktree — parallel-safe
 maxTurns: 50                         # longest budget; it writes code
 ```
+
+Its body opens with a `## Model tier` section naming sonnet-tier — mechanical work, not judgement.
 
 The denylist is **inverted** from a creator's: `Write`/`Edit`/`Bash` are NOT denied (coder writes real files), only the artifact-store mutations are. That inversion is how you recognise C-coder.
 
@@ -27,12 +28,13 @@ The body is a 6-step procedure, each step one tool call: claim the parent RFC �
 `plugins/agents-pro/agents/guardian.md`. The last reviewer before the orchestrator activates anything.
 
 ```yaml
-model: opus                          # judges trade-offs across an evidence chain
 color: "#455A64"
 disallowedTools: Write, Edit, NotebookEdit, mcp__forgeplan__forgeplan_reason,
                  mcp__forgeplan__forgeplan_claims, mcp__plugin_fpl-hsmem_hindsight__memory_retain
 maxTurns: 20
 ```
+
+Its body opens with a `## Model tier` section naming opus-tier — it judges trade-offs across an evidence chain.
 
 Standard Profile B denylist: no file writes (EVIDENCE goes through MCP), no `reason` (the ADI cycle is a creator's tool, not a reviewer's), no `claims` exploration, no `memory_retain` (the EVID *is* the audit record). Note `forgeplan_activate` is absent from the agent's reach by the same canon — guardian **recommends**, the orchestrator **activates**.
 
@@ -48,6 +50,7 @@ Both bodies share the canonical skeleton — and any new agent should match it:
 
 ```
 Header (one line: "You are X, you do Y")
+## Model tier                — the tier this agent's work needs, stated in prose (no `model:` frontmatter field exists)
 ## Identity & audit          — the identity tag for every claim/release
 ## When to invoke            — triggers + an explicit "do NOT invoke for" list
 ## <Procedure>               — numbered steps, one tool call each (most of the body)

@@ -48,7 +48,6 @@ description: |
             "design system to code", "storybook port", "tokens to storybook", "pencil to storybook to framework",
             "проведи дизайн через canvas", "из pencil в код", "перенеси дизайн-систему в storybook",
             "оркеструй дизайн-систему", "дизайн-система в код"
-model: opus
 color: "#7E57C2"
 disallowedTools:
   - Write

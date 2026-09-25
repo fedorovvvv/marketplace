@@ -4,7 +4,6 @@ description: |
   EN: Forgeplan workflow advisor that surfaces methodology nudges during engineering tasks. HOOK-triggered background agent — suggests routing before code, evidence after implementation, periodic health checks, and ADR capture for architectural decisions. Non-blocking: all suggestions are optional.
   RU: Советник по рабочему процессу Forgeplan, подсказывающий методологические шаги во время инженерных задач. Фоновый агент через HOOK — предлагает route перед кодом, evidence после реализации, периодические health checks и захват ADR для архитектурных решений. Не блокирующий: все предложения опциональны.
   Triggers: "refactor", "new endpoint", "implement feature", "architecture decision", "forgeplan route", "forgeplan evidence", "forge-cycle", "рефакторинг", "новый эндпоинт", "реализация фичи"
-model: haiku
 color: '#546E7A'
 ---
 

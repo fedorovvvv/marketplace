@@ -19,7 +19,6 @@ description: |
   Triggers: "audit the design system", "check ds conventions", "canvas audit", "ds build review",
   "ref vs detach check", "tokens not hardcoded", "screens not reusable", "проверь дизайн-систему",
   "аудит дизайн-системы", "конвенции DS"
-model: sonnet
 color: "#EF6C00"
 disallowedTools:
   - Write

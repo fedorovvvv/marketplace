@@ -1,6 +1,6 @@
 # Agent profiles — the CRUD-R-A matrix
 
-Every agent that touches a structured-artifact store maps to **exactly one** profile. The profile fixes the model default and the set of tools the agent must not call. Mixing profiles in one agent means it can no longer be safely composed in a pipeline — refuse, and split it into two agents.
+Every agent that touches a structured-artifact store maps to **exactly one** profile. The profile fixes the typical model tier (stated in the body, never pinned in frontmatter) and the set of tools the agent must not call. Mixing profiles in one agent means it can no longer be safely composed in a pipeline — refuse, and split it into two agents.
 
 The matrix maps each operation on an artifact (Create / Read / Update / Review / Activate) to a profile.
 
@@ -50,6 +50,6 @@ The most common profile mistake is one agent that creates an artifact, reviews i
 ## Related
 
 - `tools-and-denylist.md` — the exact denied-tool set for each profile + why
-- `frontmatter.md` — the model default each profile uses
+- `frontmatter.md` — the tier each profile typically needs, and why it lives in the body
 - `examples.md` — `coder` (C-coder) and `guardian` (B-gate) dissected
 - `when-to-use.md` — the "side effect → orchestrator, not agent" rule in full

@@ -146,7 +146,7 @@ fi
 # the same checks as WARNINGS (migration nudge).
 #
 # Rules:
-#   LR-1 model is one of {opus, sonnet, haiku}, never `inherit`
+#   LR-1 model must NOT be pinned in frontmatter (runtime settings choose; AGENT-AUTHORING-GUIDE.md)
 #   LR-2 color is hex "#RRGGBB"
 #   LR-3 description is bilingual block (EN: + RU: + Triggers:)
 #   LR-4 no Profile mixing — not BOTH {Write|Edit} AND {forgeplan_new|update|link}
@@ -180,7 +180,7 @@ forgeplan_aware = 0
 legacy = 0
 
 LR_DESCRIPTIONS = {
-    'LR-1': 'model must be opus|sonnet|haiku (never inherit)',
+    'LR-1': 'model must not be pinned in frontmatter (runtime settings choose, not the agent file)',
     'LR-2': 'color must be hex #RRGGBB',
     'LR-3': 'description must be bilingual (EN: + RU: + Triggers:)',
     'LR-4': 'profile mixing — both Write/Edit AND forgeplan_new/update/link present',
@@ -240,10 +240,12 @@ def check_agent(plugin, agent_path):
 
     findings = []  # list of (rule, message)
 
-    # LR-1: model
-    model = fm.get('model', '')
-    if model not in ('opus', 'sonnet', 'haiku'):
-        findings.append(('LR-1', f"model='{model}' (must be opus|sonnet|haiku)"))
+    # LR-1: model must not be pinned — see "model: is a Claude Code binding, not a
+    # requirement" (AGENT-AUTHORING-GUIDE.md); the frontmatter no longer carries a
+    # `model:` field at all, and the tier the agent needs lives in a `## Model tier`
+    # body section instead, where it travels across runtimes.
+    if 'model' in fm:
+        findings.append(('LR-1', f"model='{fm['model']}' (frontmatter must not pin a model; state the tier in a body '## Model tier' section instead)"))
 
     # LR-2: color hex
     color = str(fm.get('color', ''))

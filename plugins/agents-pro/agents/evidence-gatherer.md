@@ -5,7 +5,6 @@ description: |
   EN: Active evidence collector for Trust Calculus scoring. Searches 20-30 sources across 5+ categories (vendor docs / peer-reviewed papers / official benchmarks / production reports / community discussion), scores Reliability per source via explicit rubric, asks the user via ask-back protocol for production metrics / logs / cluster benchmarks when topic permits. Synthesises per-hypothesis F+G+R with source attribution and writes a canonical EVID. Dispatched by adr-architect / /decision / guardian when an existing hypothesis has F+G+R sum below threshold.
   RU: Активный сборщик доказательств для оценки Trust Calculus. Ищет 20-30 источников через 5+ категорий (vendor docs / peer-reviewed / официальные бенчмарки / production reports / community), оценивает Reliability каждого источника по явной рубрике, запрашивает у пользователя через ask-back протокол production-метрики, логи, кластерные бенчмарки. Синтезирует F+G+R на каждую гипотезу с атрибуцией источников и пишет канонический EVID. Диспатчится из adr-architect / /decision / guardian когда у гипотезы F+G+R сумма ниже порога.
   Triggers: "gather evidence", "trust calculus", "score sources", "find benchmarks", "research before decision", "evidence dispatch", "собери доказательства", "оцени источники", "найди бенчмарки", "укрепи решение", "/decision low FGR", "evidence-gatherer"
-model: opus
 color: "#689F38"
 disallowedTools:
   - Write

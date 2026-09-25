@@ -4,7 +4,6 @@ description: |
   EN: TypeScript type system auditor focused on type-level correctness, generic constraint validation, and compile-time safety. Use when auditing an existing codebase for implicit `any`, unsafe assertions (`as unknown as T`), incomplete discriminated unions, or variance issues. Complements `typescript-pro` — dispatch after implementation to verify type hygiene. Hand off findings to `code-reviewer` for prioritization.
   RU: Аудитор системы типов TypeScript, сосредоточенный на корректности на уровне типов, валидации generic-ограничений и безопасности во время компиляции. Используй при аудите существующей кодовой базы на предмет неявного `any`, небезопасных утверждений (`as unknown as T`), неполных discriminated unions или проблем variance. Дополняет `typescript-pro` — запускай после реализации для проверки чистоты типов. Передавай находки `code-reviewer` для приоритизации.
   Triggers: "type audit", "type coverage", "implicit any", "unsafe assertion", "type safety audit", "TypeScript audit", "аудит типов", "покрытие типами", "небезопасные утверждения"
-model: sonnet
 tools: [Read, Write, Edit, Bash, Glob, Grep]
 color: '#3178C6'
 ---
