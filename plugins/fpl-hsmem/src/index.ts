@@ -16,8 +16,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { realpathSync, statSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { sep } from "node:path";
 import { assertPathId } from "./lib/client.js";
 import { escapeMemoryMarkers } from "./lib/content.js";
 import { redact, redactDeep } from "./lib/redact.js";
@@ -36,7 +35,8 @@ import {
 import { HindsightClient } from "./lib/client.js";
 import { BankGate } from "./lib/banks.js";
 import { loadProjectConfig, type HindsightConfig } from "./lib/config.js";
-import { formatEnrichReport, planEnrich, applyEnrichPlan } from "./lib/enrich.js";
+import { formatEnrichReport, planEnrich, applyEnrichPlan, confirmRefusal } from "./lib/enrich.js";
+import { assertInsideProject } from "./lib/paths.js";
 
 interface ToolHandlerArgs {
   [key: string]: unknown;
@@ -52,6 +52,12 @@ const config = (loaded.active ? loaded.config : null) as HindsightConfig;
 
 /** Allowlist + existence checks, shared with the batch writer. Null when inert, and then never used. */
 const gate = (loaded.active ? new BankGate(config) : null) as BankGate;
+
+/**
+ * The project's tool policy (`allowTools` / `denyTools` in `.hindsight.json`). A denied tool is
+ * neither listed nor callable — not a description telling the model to refrain.
+ */
+const enabledTools = new Set<string>(loaded.active ? config.enabledTools : []);
 
 /**
  * What the client is told about this server at handshake time.
@@ -84,7 +90,8 @@ each bank separately. memory_retain_batch routes each item of its file to its ow
 
 ENRICHING FROM SOURCES: memory is not a document store. Distil a source into short self-contained
 items (decision + why, rejected option + why, lesson, pitfall, rule) that link to the artifact, write
-them as JSONL, dry-run memory_retain_batch, show a human the report, and apply only after approval.
+them as JSONL, dry-run memory_retain_batch, show a human the report, and apply only after approval,
+passing the dry run's digest as \`confirm\`. Apply refuses a file that changed since the dry run.
 
 CORRECTING A WRONG FACT is five steps and the last two are the ones people skip:
 memory_list (find the id) -> memory_get (read it) -> memory_invalidate (retire it WITH a reason;
@@ -164,15 +171,27 @@ const tools: Tool[] = [
       "pitfall, rule, finding — one short self-contained item per line, each with a stable " +
       "document_id) into memory, one bank per item. Dry run by default: validates every line, " +
       "routes it to a bank (explicit `bank`, else the project's `routing` by metadata.repo), refuses " +
-      "lines with secrets or personal data, and reports counts and which document_ids already exist. " +
-      "Pass apply:true only after a human approved that report; writes replace by document_id, so a " +
-      "re-run is idempotent. Not for documents or transcripts.",
+      "lines with secrets or personal data, reports counts and which document_ids already exist, and " +
+      "prints a digest of the file and the plan. Apply needs apply:true AND confirm:<that digest>, " +
+      "only after a human approved the report; it refuses if the file or plan changed since. Writes " +
+      "replace by document_id (idempotent re-runs) but never a document enrich did not write, unless " +
+      "allowReplaceForeign is set. Not for documents or transcripts.",
     annotations: { title: "Write curated items in batch", destructiveHint: true, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
         file: { type: "string", description: "Path to the candidates .jsonl file, inside the project" },
         apply: { type: "boolean", description: "Write (default false: dry run, nothing written)" },
+        confirm: {
+          type: "string",
+          description: "Required with apply:true — the digest the dry run of this exact file printed",
+        },
+        allowReplaceForeign: {
+          type: "boolean",
+          description:
+            "Also replace existing documents NOT written by enrich (transcripts, ingested documents). " +
+            "Default false: such lines are refused. Changes the digest — dry-run with it too.",
+        },
       },
       required: ["file"],
     },
@@ -582,9 +601,6 @@ for (const t of tools) {
 // Helpers
 // =================================================================================================
 
-/** Max bytes we will read off disk and ship to a remote bank in one ingest. */
-const MAX_INGEST_BYTES = 2 * 1024 * 1024;
-
 const LIST_LIMIT_MAX = 50;
 
 function clampLimit(v: unknown, fallback: number): number {
@@ -623,32 +639,6 @@ function slugifyDocId(title: string): string {
     .replace(/^[.\-]+/, "")
     .replace(/[.\-]+$/, "");
   return assertPathId(slug, "document id");
-}
-
-/**
- * A file we are willing to read and upload. Server-side secret masking is off on this deployment
- * and document text is stored verbatim, so an unbounded absolute path is an exfiltration primitive.
- */
-function assertIngestPath(input: string, projectRoot: string): string {
-  const root = realpathSync(resolve(projectRoot));
-  let real: string;
-  try {
-    real = realpathSync(resolve(input));
-  } catch (err) {
-    throw new Error(`cannot resolve ${input}: ${(err as Error).message}`);
-  }
-  if (real !== root && !real.startsWith(root + sep)) {
-    // Refuse rather than truncate: a partial upload of the wrong file is still the wrong file.
-    throw new Error(
-      `refusing to ingest ${input}: it resolves to ${real}, which is outside the project root ${root}. ` +
-        `Symlinks are followed before this check, so a link pointing out of the project is refused too.`,
-    );
-  }
-  const size = statSync(real).size;
-  if (size > MAX_INGEST_BYTES) {
-    throw new Error(`refusing to ingest ${real}: ${size} bytes exceeds the ${MAX_INGEST_BYTES}-byte cap`);
-  }
-  return real;
 }
 
 /**
@@ -799,20 +789,28 @@ const handlers: Record<string, ToolHandler> = {
     const file = String(args.file ?? "");
     if (!file) return "Error: file is required";
     let real: string;
-    let text: string;
+    let bytes: Buffer;
     try {
       // Same rule as document_ingest_file: the file must be inside the project.
-      real = assertIngestPath(file, config.projectRoot || process.cwd());
-      text = readFileSync(real, "utf-8");
+      real = assertInsideProject(file, config.projectRoot || process.cwd());
+      bytes = readFileSync(real);
     } catch (e) {
       return `Error: ${(e as Error).message}`;
     }
-    const plan = await planEnrich(text, { maxChars: config.enrichMaxChars, routing: config.routing }, (b) =>
-      gate.resolve(b),
+    const plan = await planEnrich(
+      bytes,
+      { maxChars: config.enrichMaxChars, routing: config.routing, allowReplaceForeign: args.allowReplaceForeign === true },
+      (b) => gate.resolve(b),
     );
+    if (args.apply === true) {
+      const refusal = confirmRefusal(plan, args.confirm);
+      if (refusal) return refusal;
+    }
     const applied = args.apply === true ? await applyEnrichPlan(plan) : undefined;
     return formatEnrichReport(real, plan, applied, {
-      applyHint: "Show this to a human; call again with apply:true only after they approve.",
+      applyHint:
+        `Show this to a human; only after they approve, call again with apply:true, confirm:"${plan.digest}"` +
+        (args.allowReplaceForeign === true ? ", allowReplaceForeign:true." : "."),
     });
   },
 
@@ -929,6 +927,8 @@ const handlers: Record<string, ToolHandler> = {
         project_root: config.projectRoot,
         url: config.url,
         token_source: config.tokenSource,
+        // What the tool policy left callable — "all" unless allowTools/denyTools narrowed it.
+        tools: config.enabledTools.length === TOOL_NAMES.length ? "all" : config.enabledTools,
       },
       null,
       2,
@@ -1209,7 +1209,7 @@ const handlers: Record<string, ToolHandler> = {
     let content: string;
     let docId: string;
     try {
-      real = assertIngestPath(path, config.projectRoot || process.cwd());
+      real = assertInsideProject(path, config.projectRoot || process.cwd());
       content = readFileSync(real, "utf-8");
       const filename = real.split(sep).pop() ?? "doc";
       docId = slugifyDocId(filename.replace(/\.[^.]+$/, ""));
@@ -1358,7 +1358,7 @@ const handlers: Record<string, ToolHandler> = {
   }
 }
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: loaded.active ? tools : [] }));
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.filter((t) => enabledTools.has(t.name)) }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const name = request.params.name;
@@ -1368,6 +1368,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // A protocol error, not a result. Returning `isError` inside a result told the model to retry
     // a tool that does not exist.
     throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
+  }
+  if (!enabledTools.has(name)) {
+    throw new McpError(
+      ErrorCode.MethodNotFound,
+      `Tool ${name} is disabled by this project's tool policy (allowTools/denyTools in ${config.configPath})`,
+    );
   }
   let client: HindsightClient;
   try {

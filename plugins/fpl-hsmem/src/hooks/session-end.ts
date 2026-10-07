@@ -40,7 +40,8 @@ async function main(): Promise<void> {
     }
   }
 
-  const loaded = loadProjectConfig(hookInput.cwd ?? process.cwd());
+  // Token-free: runRetain reads the token itself, and only when it is actually going to write.
+  const loaded = loadProjectConfig(hookInput.cwd ?? process.cwd(), { token: false });
   if (!loaded.active) return; // not an opted-in project: the hook does nothing
   const { config } = loaded;
   debugLog(config, `SessionEnd, reason: ${hookInput.reason ?? "unknown"}`);

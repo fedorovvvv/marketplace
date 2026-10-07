@@ -435,10 +435,60 @@ var HindsightClient = class {
 };
 
 // src/lib/config.ts
-import { readFileSync as readFileSync3, existsSync as existsSync2 } from "node:fs";
+import { readFileSync as readFileSync3, existsSync as existsSync2, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname as dirname2, isAbsolute, join as join2, normalize, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname as dirname2, isAbsolute, join as join2, normalize, resolve, sep } from "node:path";
+
+// src/lib/tool-names.ts
+var TOOL_NAMES = [
+  // memory — write and read
+  "memory_retain",
+  "memory_retain_batch",
+  "memory_recall",
+  "memory_reflect",
+  "memory_status",
+  "memory_get_current_bank",
+  "memory_set_mission",
+  // memory — browse and correct
+  "memory_list",
+  "memory_get",
+  "memory_invalidate",
+  "memory_reconsolidate",
+  "memory_operations",
+  // mental models
+  "mental_model_list",
+  "mental_model_get",
+  "mental_model_create",
+  "mental_model_update",
+  "mental_model_delete",
+  "mental_model_refresh",
+  "mental_model_clear",
+  // directives
+  "directive_list",
+  "directive_create",
+  "directive_delete",
+  // bank configuration
+  "bank_config_get",
+  "bank_config_set",
+  // documents
+  "document_ingest",
+  "document_ingest_file",
+  "document_list",
+  "document_delete"
+];
+var NAME_SET = new Set(TOOL_NAMES);
+function isOwnTool(name) {
+  if (!name) return false;
+  if (NAME_SET.has(name)) return true;
+  const suffix = name.split("__").pop() ?? "";
+  return NAME_SET.has(suffix);
+}
+
+// src/lib/config.ts
 var CONFIG_FILE = ".hindsight.json";
+var ENRICH_MAX_CHARS_LIMIT = 2e3;
+var ALLOW_TOKEN_COMMAND_ENV = "HINDSIGHT_ALLOW_TOKEN_COMMAND";
 var TUNING_DEFAULTS = {
   autoRecall: false,
   autoRetain: false,
@@ -487,13 +537,30 @@ var LEGACY_KEYS = {
 function isStringArray(v) {
   return Array.isArray(v) && v.every((x) => typeof x === "string" && x.length > 0);
 }
-function findConfigFile(cwd) {
-  let dir = normalize(resolve(cwd || process.cwd()));
+function isWithin(path, root) {
+  return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
+}
+function gitToplevel(start, home) {
+  let dir = start;
   for (; ; ) {
-    const candidate = join2(dir, CONFIG_FILE);
-    if (existsSync2(candidate)) return candidate;
+    if (existsSync2(join2(dir, ".git"))) return dir;
     const parent = dirname2(dir);
-    if (parent === dir) return null;
+    if (dir === home || parent === dir) return null;
+    dir = parent;
+  }
+}
+function findConfigFile(cwd) {
+  const start = normalize(resolve(cwd || process.cwd()));
+  const home = normalize(resolve(process.env.HOME || homedir()));
+  const stop = gitToplevel(start, home) ?? (isWithin(start, home) ? home : start);
+  let dir = start;
+  for (; ; ) {
+    if (dir !== home) {
+      const candidate = join2(dir, CONFIG_FILE);
+      if (existsSync2(candidate)) return candidate;
+    }
+    const parent = dirname2(dir);
+    if (dir === stop || parent === dir) return null;
     dir = parent;
   }
 }
@@ -504,14 +571,27 @@ function isDisabled(cwd = process.cwd(), configDir) {
   return ["1", "true", "yes", "on"].includes(env.toLowerCase());
 }
 function readToken(raw, configDir) {
-  const envKey = process.env.HINDSIGHT_API_KEY;
-  if (envKey) return { token: envKey.trim(), source: "env" };
+  const envKey = process.env.HINDSIGHT_API_KEY?.trim();
+  if (envKey && process.env.HINDSIGHT_URL) return { token: envKey, source: "env" };
   if (raw.tokenFile !== void 0) {
     if (typeof raw.tokenFile !== "string" || !raw.tokenFile) throw new Error("`tokenFile` must be a non-empty string");
     const path = isAbsolute(raw.tokenFile) ? raw.tokenFile : resolve(configDir, raw.tokenFile);
+    let real;
+    let root;
+    try {
+      real = realpathSync(path);
+      root = realpathSync(configDir);
+    } catch (err) {
+      throw new Error(`cannot read tokenFile ${path}: ${err.code ?? err.message}`);
+    }
+    if (real === root || !isWithin(real, root)) {
+      throw new Error(
+        `tokenFile ${path} resolves outside ${root}, the directory holding ${CONFIG_FILE} \u2014 a token file must live next to the config that names it`
+      );
+    }
     let text;
     try {
-      text = readFileSync3(path, "utf-8");
+      text = readFileSync3(real, "utf-8");
     } catch (err) {
       throw new Error(`cannot read tokenFile ${path}: ${err.code ?? err.message}`);
     }
@@ -522,6 +602,11 @@ function readToken(raw, configDir) {
   if (raw.tokenCommand !== void 0) {
     if (!isStringArray(raw.tokenCommand) || raw.tokenCommand.length === 0) {
       throw new Error("`tokenCommand` must be a non-empty array of strings (argv, no shell)");
+    }
+    if (process.env[ALLOW_TOKEN_COMMAND_ENV] !== "1") {
+      throw new Error(
+        `\`tokenCommand\` runs only when ${ALLOW_TOKEN_COMMAND_ENV}=1 is set in your environment \u2014 a config file a repository can commit must not run commands on its own`
+      );
     }
     const [cmd, ...args] = raw.tokenCommand;
     let out;
@@ -541,7 +626,19 @@ function readToken(raw, configDir) {
   }
   return { token: "", source: "none" };
 }
-function loadProjectConfig(cwd = process.cwd()) {
+function toolList(raw, key, problems) {
+  const v = raw[key];
+  if (v === void 0) return void 0;
+  if (!Array.isArray(v) || !v.every((x) => typeof x === "string" && x.length > 0)) {
+    problems.push(`\`${key}\` must be an array of tool names`);
+    return void 0;
+  }
+  const known = new Set(TOOL_NAMES);
+  const unknown = v.filter((n) => !known.has(n));
+  if (unknown.length) problems.push(`\`${key}\` names unknown tool(s) ${unknown.join(", ")}`);
+  return new Set(v);
+}
+function loadProjectConfig(cwd = process.cwd(), opts = {}) {
   const configPath = findConfigFile(cwd);
   if (!configPath) {
     return { active: false, reason: `no ${CONFIG_FILE} at or above ${resolve(cwd || process.cwd())}` };
@@ -580,9 +677,12 @@ function loadProjectConfig(cwd = process.cwd()) {
     tuning[key] = v;
   }
   if (!["low", "mid", "high"].includes(tuning.recallBudget)) problems.push("`recallBudget` must be low, mid or high");
-  if (!Number.isInteger(tuning.enrichMaxChars) || tuning.enrichMaxChars < 1) {
-    problems.push("`enrichMaxChars` must be a positive integer");
+  if (!Number.isInteger(tuning.enrichMaxChars) || tuning.enrichMaxChars < 1 || tuning.enrichMaxChars > ENRICH_MAX_CHARS_LIMIT) {
+    problems.push(`\`enrichMaxChars\` must be an integer from 1 to ${ENRICH_MAX_CHARS_LIMIT}`);
   }
+  const allow = toolList(raw, "allowTools", problems);
+  const deny = toolList(raw, "denyTools", problems);
+  const enabledTools = TOOL_NAMES.filter((n) => (!allow || allow.has(n)) && !deny?.has(n));
   const routing = {};
   if (raw.routing !== void 0) {
     if (!raw.routing || typeof raw.routing !== "object" || Array.isArray(raw.routing)) {
@@ -600,7 +700,7 @@ function loadProjectConfig(cwd = process.cwd()) {
     }
   }
   let token = { token: "", source: "none" };
-  if (problems.length === 0) {
+  if (problems.length === 0 && opts.token !== false) {
     try {
       token = readToken(raw, configDir);
     } catch (err) {
@@ -624,7 +724,8 @@ function loadProjectConfig(cwd = process.cwd()) {
       tokenSource: token.source,
       configPath,
       projectRoot: configDir,
-      routing
+      routing,
+      enabledTools
     }
   };
 }
@@ -632,51 +733,6 @@ function debugLog(config, ...args) {
   if (config?.debug) {
     console.error("[Hindsight]", ...args);
   }
-}
-
-// src/lib/tool-names.ts
-var TOOL_NAMES = [
-  // memory — write and read
-  "memory_retain",
-  "memory_retain_batch",
-  "memory_recall",
-  "memory_reflect",
-  "memory_status",
-  "memory_get_current_bank",
-  "memory_set_mission",
-  // memory — browse and correct
-  "memory_list",
-  "memory_get",
-  "memory_invalidate",
-  "memory_reconsolidate",
-  "memory_operations",
-  // mental models
-  "mental_model_list",
-  "mental_model_get",
-  "mental_model_create",
-  "mental_model_update",
-  "mental_model_delete",
-  "mental_model_refresh",
-  "mental_model_clear",
-  // directives
-  "directive_list",
-  "directive_create",
-  "directive_delete",
-  // bank configuration
-  "bank_config_get",
-  "bank_config_set",
-  // documents
-  "document_ingest",
-  "document_ingest_file",
-  "document_list",
-  "document_delete"
-];
-var NAME_SET = new Set(TOOL_NAMES);
-function isOwnTool(name) {
-  if (!name) return false;
-  if (NAME_SET.has(name)) return true;
-  const suffix = name.split("__").pop() ?? "";
-  return NAME_SET.has(suffix);
 }
 
 // src/lib/content.ts
@@ -845,8 +901,8 @@ import {
   unlinkSync
 } from "node:fs";
 import { join as join3 } from "node:path";
-import { homedir } from "node:os";
-var STATE_DIR = process.env.CLAUDE_PLUGIN_DATA ? join3(process.env.CLAUDE_PLUGIN_DATA, "state") : join3(homedir(), ".hindsight", "state");
+import { homedir as homedir2 } from "node:os";
+var STATE_DIR = process.env.CLAUDE_PLUGIN_DATA ? join3(process.env.CLAUDE_PLUGIN_DATA, "state") : join3(homedir2(), ".hindsight", "state");
 var MAX_TRACKED_SESSIONS = 1e4;
 function ensureDir() {
   mkdirSync(STATE_DIR, { recursive: true });
@@ -929,13 +985,19 @@ function resolveTemplate(value, vars) {
 }
 async function runRetain(hookInput, force = false) {
   const cwd = hookInput.cwd ?? process.cwd();
-  const loaded = loadProjectConfig(cwd);
-  if (!loaded.active) return;
-  const { config } = loaded;
-  if (!config.autoRetain) {
-    debugLog(config, "autoRetain disabled, skipping");
+  const peek = loadProjectConfig(cwd, { token: false });
+  if (!peek.active) return;
+  if (!peek.config.autoRetain) {
+    debugLog(peek.config, "autoRetain disabled, skipping");
     return;
   }
+  const loaded = loadProjectConfig(cwd);
+  if (!loaded.active) {
+    process.stderr.write(`[Hindsight] Retain skipped: ${loaded.reason}
+`);
+    return;
+  }
+  const { config } = loaded;
   const sessionId = hookInput.session_id ?? "unknown";
   const messages = readTranscript(hookInput.transcript_path);
   if (messages.length === 0) {
@@ -1057,7 +1119,7 @@ async function main2() {
       return;
     }
   }
-  const loaded = loadProjectConfig(hookInput.cwd ?? process.cwd());
+  const loaded = loadProjectConfig(hookInput.cwd ?? process.cwd(), { token: false });
   if (!loaded.active) return;
   const { config } = loaded;
   debugLog(config, `SessionEnd, reason: ${hookInput.reason ?? "unknown"}`);

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { assertPathId, type HindsightClient, type RetainItem } from "./client.js";
 import { redact, secretKinds } from "./redact.js";
 
@@ -22,7 +23,22 @@ import { redact, secretKinds } from "./redact.js";
  * `update_mode: "replace"`, so re-running the same file replaces the same documents instead of
  * accumulating duplicates. That is also why a duplicate `document_id` inside one file is refused:
  * two items fighting over one document would leave whichever happened to be processed last.
+ *
+ * WHAT APPLY MAY REPLACE. Replace is destructive: it deletes the document's earlier memories. So
+ * every item is written with the tag `source-tool:enrich`, and apply replaces only documents that
+ * carry it — documents this pipeline wrote. A `document_id` that collides with anything else (a
+ * captured transcript, an ingested document, a manual retain) is refused per line unless the
+ * caller passes `allowReplaceForeign`. The tag is a guard against accidents, not an access control:
+ * anyone who can write memory can set any tag.
+ *
+ * WHY APPLY CARRIES A DIGEST. The dry run returns a digest of the file's bytes and of the resolved
+ * plan (banks, routing, refusals, which documents exist). Apply recomputes it and refuses unless
+ * the caller passes the same value — so what is written is exactly what a human reviewed, and a
+ * file edited (or a server that changed) since the report cannot slip through.
  */
+
+/** Tag carried by every item this pipeline writes; apply replaces only documents that have it. */
+export const ENRICH_SOURCE_TAG = "source-tool:enrich";
 
 export const ENRICH_KINDS = ["decision", "rejected", "lesson", "pitfall", "rule", "finding"] as const;
 const KINDS = new Set<string>(ENRICH_KINDS);
@@ -119,6 +135,8 @@ export interface ParsedCandidates {
 export interface EnrichOptions {
   maxChars: number;
   routing: Record<string, string>;
+  /** Replace existing documents that were not written by this pipeline. Off by default. */
+  allowReplaceForeign?: boolean;
 }
 
 /** Validate, route and scan every line. Pure: no network, no filesystem. */
@@ -219,7 +237,7 @@ export function parseCandidates(text: string, opts: EnrichOptions): ParsedCandid
       continue;
     }
     const kind = c.kind as string;
-    const tags = [...new Set([...((c.tags as string[] | undefined) ?? []), `kind:${kind}`])];
+    const tags = [...new Set([...((c.tags as string[] | undefined) ?? []), `kind:${kind}`, ENRICH_SOURCE_TAG])];
     const ts = c.timestamp as string;
     out.candidates.push({
       line,
@@ -247,12 +265,16 @@ export interface BankPlan {
   candidates: EnrichCandidate[];
   /** document_ids of candidates the server already holds — apply replaces them. */
   existing: string[];
+  /** The subset of `existing` not written by this pipeline (only with allowReplaceForeign). */
+  foreign: string[];
 }
 
 export interface EnrichPlan {
   lines: number;
   refused: EnrichRefusal[];
   banks: BankPlan[];
+  /** sha256 of the file bytes and the resolved plan. Apply must be confirmed with this value. */
+  digest: string;
 }
 
 /** Resolves a bank to a client, or to a refusal message (allowlist / existence). */
@@ -273,11 +295,12 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
 
 /**
  * Everything short of writing: parse, gate each bank (allowlist + exists on the server, never
- * created), and look up which document_ids already exist. Reads only. Throws on a network or
- * server failure — a plan built on a failed lookup would misreport what apply is about to replace.
+ * created), look up which document_ids already exist and who wrote them, and digest the result.
+ * Reads only. Throws on a network or server failure — a plan built on a failed lookup would
+ * misreport what apply is about to replace.
  */
-export async function planEnrich(text: string, opts: EnrichOptions, resolve: BankResolver): Promise<EnrichPlan> {
-  const parsed = parseCandidates(text, opts);
+export async function planEnrich(bytes: Uint8Array, opts: EnrichOptions, resolve: BankResolver): Promise<EnrichPlan> {
+  const parsed = parseCandidates(new TextDecoder().decode(bytes), opts);
   const byBank = new Map<string, EnrichCandidate[]>();
   for (const c of parsed.candidates) {
     const list = byBank.get(c.bank);
@@ -286,22 +309,80 @@ export async function planEnrich(text: string, opts: EnrichOptions, resolve: Ban
   }
   const refused = [...parsed.refused];
   const banks: BankPlan[] = [];
-  for (const [bank, candidates] of byBank) {
+  for (const [bank, all] of byBank) {
     const client = await resolve(bank);
     if (typeof client === "string") {
-      for (const c of candidates) refused.push({ line: c.line, documentId: c.item.document_id, reasons: [client] });
+      for (const c of all) refused.push({ line: c.line, documentId: c.item.document_id, reasons: [client] });
       continue;
     }
-    const found = await mapLimit(candidates, LOOKUP_CONCURRENCY, (c) => client.getDocument(c.item.document_id));
-    banks.push({
-      bank,
-      client,
-      candidates,
-      existing: candidates.filter((_, i) => found[i] !== null).map((c) => c.item.document_id),
-    });
+    const found = await mapLimit(all, LOOKUP_CONCURRENCY, (c) => client.getDocument(c.item.document_id));
+    const candidates: EnrichCandidate[] = [];
+    const existing: string[] = [];
+    const foreign: string[] = [];
+    for (const [i, c] of all.entries()) {
+      const doc = found[i];
+      const id = c.item.document_id;
+      if (doc === null) {
+        candidates.push(c);
+        continue;
+      }
+      const ours = Array.isArray(doc.tags) && doc.tags.includes(ENRICH_SOURCE_TAG);
+      if (!ours && !opts.allowReplaceForeign) {
+        const units = typeof doc.memory_unit_count === "number" ? `${doc.memory_unit_count} memory unit(s)` : "its memories";
+        refused.push({
+          line: c.line,
+          documentId: id,
+          reasons: [
+            `document "${id}" already exists in bank "${bank}" and was not written by enrich — replacing ` +
+              `it would delete ${units}. Choose another document_id, or pass allowReplaceForeign ` +
+              `if replacing it is intended`,
+          ],
+        });
+        continue;
+      }
+      candidates.push(c);
+      existing.push(id);
+      if (!ours) foreign.push(id);
+    }
+    if (candidates.length) banks.push({ bank, client, candidates, existing, foreign });
   }
   refused.sort((a, b) => a.line - b.line);
-  return { lines: parsed.lines, refused, banks };
+  const resolved = {
+    v: 1,
+    file: createHash("sha256").update(bytes).digest("hex"),
+    allowReplaceForeign: opts.allowReplaceForeign === true,
+    banks: banks.map((b) => ({
+      bank: b.bank,
+      items: b.candidates.map((c) => c.item.document_id),
+      existing: [...b.existing].sort(),
+      foreign: [...b.foreign].sort(),
+    })),
+    refused: refused.map((r) => [r.line, r.documentId ?? null, r.reasons]),
+  };
+  const digest = createHash("sha256").update(JSON.stringify(resolved)).digest("hex");
+  return { lines: parsed.lines, refused, banks, digest };
+}
+
+/**
+ * Null when `confirm` matches the plan's digest, else why apply must not proceed. Apply recomputes
+ * the plan from the file as it is now, so any edit to the file — or a change on the server that
+ * alters what would be replaced — yields a different digest and is refused.
+ */
+export function confirmRefusal(plan: EnrichPlan, confirm: unknown): string | null {
+  if (typeof confirm !== "string" || !confirm) {
+    return (
+      "Refusing to apply: apply requires the digest printed by the dry run of this exact file. " +
+      "Run the dry run, have a human review the report, then apply with that digest. Nothing was written."
+    );
+  }
+  if (confirm.trim().toLowerCase() !== plan.digest) {
+    return (
+      "Refusing to apply: the file or the resolved plan changed since the dry run that produced this " +
+      "digest (an edited line, a different routing, or documents created or removed on the server). " +
+      "Dry-run again and review the new report. Nothing was written."
+    );
+  }
+  return null;
 }
 
 export interface BatchResult {
@@ -349,6 +430,7 @@ export function enrichSummary(file: string, plan: EnrichPlan, applied?: BatchRes
   return {
     file,
     mode: applied ? "apply" : "dry-run",
+    digest: plan.digest,
     lines: plan.lines,
     accepted: plan.banks.reduce((n, b) => n + b.candidates.length, 0),
     refused: plan.refused,
@@ -359,6 +441,7 @@ export function enrichSummary(file: string, plan: EnrichPlan, applied?: BatchRes
         ENRICH_KINDS.map((k) => [k, b.candidates.filter((c) => c.kind === k).length]).filter(([, n]) => n),
       ),
       existing: b.existing,
+      foreign: b.foreign,
     })),
     ...(applied ? { batches: applied } : {}),
   };
@@ -376,6 +459,7 @@ export function formatEnrichReport(
   const out: string[] = [];
   out.push(applied ? `APPLY — ${file}` : `DRY RUN — nothing written — ${file}`);
   out.push(`lines ${plan.lines} · accepted ${accepted} · refused ${plan.refused.length}`);
+  out.push(`digest ${plan.digest}`);
   out.push("");
   if (plan.banks.length === 0) out.push("No item is writable.");
   for (const b of plan.banks) {
@@ -391,7 +475,9 @@ export function formatEnrichReport(
       out.push(`  line ${r.line}${r.documentId ? ` [${r.documentId}]` : ""}: ${r.reasons.join("; ")}`);
     }
   }
-  const existing = plan.banks.flatMap((b) => b.existing.map((id) => `  ${b.bank}  ${id}`));
+  const existing = plan.banks.flatMap((b) =>
+    b.existing.map((id) => `  ${b.bank}  ${id}${b.foreign.includes(id) ? "  (NOT written by enrich — allowReplaceForeign)" : ""}`),
+  );
   if (existing.length) {
     const shown = existing.slice(0, 20);
     out.push("", `already on the server (${existing.length}) — same document_id, ${applied ? "replaced" : "apply replaces them"}:`);

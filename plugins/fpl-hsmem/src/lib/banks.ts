@@ -1,6 +1,9 @@
 import { HindsightClient } from "./client.js";
 import type { HindsightConfig } from "./config.js";
 
+/** How long a confirmed bank stays confirmed before the bank list is asked again. */
+export const BANK_EXISTS_TTL_MS = 5 * 60 * 1000;
+
 /**
  * The one place a bank id becomes a client.
  *
@@ -13,10 +16,21 @@ import type { HindsightConfig } from "./config.js";
 export class BankGate {
   /** One client per bank, created on first use. */
   private readonly clients = new Map<string, HindsightClient>();
-  /** Banks confirmed to exist on the server. Only positives are cached; a missing bank is re-asked. */
-  private readonly known = new Set<string>();
+  /**
+   * When each bank was last confirmed to exist. Only positives are cached, and only for `ttlMs`: a
+   * bank an operator deleted must stop being accepted, or the next write would recreate it.
+   */
+  private readonly confirmedAt = new Map<string, number>();
+  private readonly ttlMs: number;
+  private readonly now: () => number;
 
-  constructor(private readonly config: Pick<HindsightConfig, "url" | "banks" | "defaultBank" | "apiKey" | "configPath">) {}
+  constructor(
+    private readonly config: Pick<HindsightConfig, "url" | "banks" | "defaultBank" | "apiKey" | "configPath">,
+    opts: { ttlMs?: number; now?: () => number } = {},
+  ) {
+    this.ttlMs = opts.ttlMs ?? BANK_EXISTS_TTL_MS;
+    this.now = opts.now ?? Date.now;
+  }
 
   /** A client for the default bank without the existence check — for tools that never touch a bank. */
   defaultClient(): HindsightClient {
@@ -46,14 +60,16 @@ export class BankGate {
       );
     }
     const client = this.clientFor(bank);
-    if (!this.known.has(bank)) {
+    const at = this.confirmedAt.get(bank);
+    if (at === undefined || this.now() - at >= this.ttlMs) {
       if (!(await client.bankExists(bank))) {
+        this.confirmedAt.delete(bank);
         return (
           `Refusing: bank "${bank}" does not exist on ${this.config.url}. This server never creates ` +
           `banks — an operator creates one deliberately, then this call will work.`
         );
       }
-      this.known.add(bank);
+      this.confirmedAt.set(bank, this.now());
     }
     return client;
   }

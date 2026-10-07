@@ -1,4 +1,5 @@
 import { check, finish, project, fakeHindsight, withServer, runHook } from "./lib/harness.mjs";
+import { BankGate } from "../dist/testable.mjs";
 
 // "ghost" is allowed by the project but absent on the server; "other" exists but is not allowed.
 const fake = await fakeHindsight(["alpha", "beta", "other"]);
@@ -54,6 +55,37 @@ console.log("recall hook reads defaultBank only");
   const res = await runHook("recall.mjs", { cwd: hdir, prompt: "what did we decide about caching?" });
   const hits = fake.requests.slice(before).filter((q) => q.path.endsWith("/memories/recall"));
   check(res.code === 0 && hits.length === 1 && hits[0].path === "/v1/default/banks/beta/memories/recall", "one recall, on the default bank", JSON.stringify(hits));
+  check(fake.requests.slice(before).some((q) => q.path === "/v1/default/banks" && q.query.includes("q=beta")), "after checking the bank exists");
+}
+
+console.log("recall hook goes through the bank existence gate");
+{
+  // "ghost" is allowed but missing: a bank-scoped read could create it, so the hook must not touch it.
+  const gdir = project({ url: fake.url, banks: ["ghost"], defaultBank: "ghost", tokenFile: "t", autoRecall: true }, { t: "tok" });
+  const before = fake.requests.length;
+  const res = await runHook("recall.mjs", { cwd: gdir, prompt: "what did we decide about caching?" });
+  const after = fake.requests.slice(before);
+  check(res.code === 0 && res.stdout === "", "no context injected", res.stdout);
+  check(!after.some((q) => q.path.startsWith("/v1/default/banks/ghost")), "never sends a bank-scoped request to a missing bank", JSON.stringify(after));
+  check(/Recall skipped: Refusing: bank "ghost" does not exist/.test(res.stderr), "says why on stderr", res.stderr);
+}
+
+console.log("bank existence cache expires");
+{
+  const live = ["alpha"];
+  const f = await fakeHindsight(live);
+  let now = 0;
+  const gate = new BankGate({ url: f.url, banks: ["alpha"], defaultBank: "alpha", apiKey: "k", configPath: "/x/.hindsight.json" }, { ttlMs: 1000, now: () => now });
+  const lists = () => f.requests.filter((q) => q.path === "/v1/default/banks").length;
+  check(typeof (await gate.resolve("alpha")) !== "string", "an existing bank resolves");
+  now = 999;
+  await gate.resolve("alpha");
+  check(lists() === 1, "confirmed within the TTL: not re-asked");
+  live.splice(0); // an operator deletes the bank
+  now = 1000;
+  const r = await gate.resolve("alpha");
+  check(lists() === 2 && typeof r === "string" && /does not exist/.test(r), "after the TTL it is re-asked, and a deleted bank is refused", String(r));
+  f.close();
 }
 
 fake.close();

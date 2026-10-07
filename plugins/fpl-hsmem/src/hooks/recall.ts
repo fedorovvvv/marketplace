@@ -6,14 +6,15 @@
  *   1. Read hook input from stdin
  *   2. Load the project .hindsight.json (none → no-op); recall reads defaultBank only
  *   3. Compose multi-turn query from transcript if needed
- *   4. Call Hindsight recall
+ *   4. Check the bank exists (BankGate — the same gate as every MCP tool), then recall
  *   5. Output additionalContext as hookSpecificOutput
  *
  * Exits 0 on any error (graceful degradation — never breaks the prompt flow).
  */
 
 import { readTranscript } from "../lib/transcript.js";
-import { HindsightClient, type RecallResult } from "../lib/client.js";
+import { type RecallResult } from "../lib/client.js";
+import { BankGate } from "../lib/banks.js";
 import { loadProjectConfig, debugLog } from "../lib/config.js";
 import {
   composeRecallQuery,
@@ -52,14 +53,19 @@ async function main(): Promise<void> {
   }
 
   const cwd = hookInput.cwd ?? process.cwd();
-  const loaded = loadProjectConfig(cwd);
-  if (!loaded.active) return; // not an opted-in project: the hook does nothing
-  const { config } = loaded;
-
-  if (!config.autoRecall) {
-    debugLog(config, "autoRecall disabled, skipping");
+  // First without the token: whether this hook runs at all is decided before a token is read.
+  const peek = loadProjectConfig(cwd, { token: false });
+  if (!peek.active) return; // not an opted-in project: the hook does nothing
+  if (!peek.config.autoRecall) {
+    debugLog(peek.config, "autoRecall disabled, skipping");
     return;
   }
+  const loaded = loadProjectConfig(cwd);
+  if (!loaded.active) {
+    process.stderr.write(`[Hindsight] Recall skipped: ${loaded.reason}\n`);
+    return;
+  }
+  const { config } = loaded;
 
   const prompt = (hookInput.prompt ?? hookInput.user_prompt ?? "").trim();
   if (!prompt || prompt.length < 5) {
@@ -69,7 +75,6 @@ async function main(): Promise<void> {
 
   // The hook never fans out across banks: it reads the declared default and nothing else.
   const bankId = config.defaultBank;
-  const client = new HindsightClient(config.url, bankId, config.apiKey);
 
   let query = prompt;
   if (config.recallContextTurns > 1) {
@@ -85,6 +90,13 @@ async function main(): Promise<void> {
 
   let results: RecallResult[];
   try {
+    // Through the same gate as the MCP tools: Hindsight may create a bank on a bank-scoped read,
+    // so a missing default bank is refused here rather than touched.
+    const client = await new BankGate(config).resolve(bankId);
+    if (typeof client === "string") {
+      process.stderr.write(`[Hindsight] Recall skipped: ${client}\n`);
+      return;
+    }
     const response = await client.recall(query, {
       maxTokens: config.recallMaxTokens,
       budget: config.recallBudget,

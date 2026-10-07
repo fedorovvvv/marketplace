@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 
 // src/enrich.ts
-import { readFileSync as readFileSync3, statSync } from "node:fs";
-import { resolve as resolve2 } from "node:path";
+import { readFileSync as readFileSync3 } from "node:fs";
 
 // src/lib/version.ts
 import { readFileSync } from "node:fs";
@@ -127,11 +126,11 @@ var HindsightClient = class {
         }
         throw err;
       }
-      const text2 = await res.text();
+      const text = await res.text();
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status} from ${path2}: ${text2}`);
+        throw new Error(`HTTP ${res.status} from ${path2}: ${text}`);
       }
-      return text2 ? JSON.parse(text2) : {};
+      return text ? JSON.parse(text) : {};
     } finally {
       clearTimeout(timer);
     }
@@ -407,15 +406,23 @@ var HindsightClient = class {
 };
 
 // src/lib/banks.ts
+var BANK_EXISTS_TTL_MS = 5 * 60 * 1e3;
 var BankGate = class {
-  constructor(config2) {
+  constructor(config2, opts = {}) {
     this.config = config2;
+    this.ttlMs = opts.ttlMs ?? BANK_EXISTS_TTL_MS;
+    this.now = opts.now ?? Date.now;
   }
   config;
   /** One client per bank, created on first use. */
   clients = /* @__PURE__ */ new Map();
-  /** Banks confirmed to exist on the server. Only positives are cached; a missing bank is re-asked. */
-  known = /* @__PURE__ */ new Set();
+  /**
+   * When each bank was last confirmed to exist. Only positives are cached, and only for `ttlMs`: a
+   * bank an operator deleted must stop being accepted, or the next write would recreate it.
+   */
+  confirmedAt = /* @__PURE__ */ new Map();
+  ttlMs;
+  now;
   /** A client for the default bank without the existence check — for tools that never touch a bank. */
   defaultClient() {
     return this.clientFor(this.config.defaultBank);
@@ -439,21 +446,67 @@ var BankGate = class {
       return `Refusing: bank "${bank}" is not in this project's allowlist (${this.config.banks.join(", ")}). Allowed banks are declared in ${this.config.configPath}.`;
     }
     const client = this.clientFor(bank);
-    if (!this.known.has(bank)) {
+    const at = this.confirmedAt.get(bank);
+    if (at === void 0 || this.now() - at >= this.ttlMs) {
       if (!await client.bankExists(bank)) {
+        this.confirmedAt.delete(bank);
         return `Refusing: bank "${bank}" does not exist on ${this.config.url}. This server never creates banks \u2014 an operator creates one deliberately, then this call will work.`;
       }
-      this.known.add(bank);
+      this.confirmedAt.set(bank, this.now());
     }
     return client;
   }
 };
 
 // src/lib/config.ts
-import { readFileSync as readFileSync2, existsSync } from "node:fs";
+import { readFileSync as readFileSync2, existsSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname as dirname2, isAbsolute, join as join2, normalize, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname as dirname2, isAbsolute, join as join2, normalize, resolve, sep } from "node:path";
+
+// src/lib/tool-names.ts
+var TOOL_NAMES = [
+  // memory — write and read
+  "memory_retain",
+  "memory_retain_batch",
+  "memory_recall",
+  "memory_reflect",
+  "memory_status",
+  "memory_get_current_bank",
+  "memory_set_mission",
+  // memory — browse and correct
+  "memory_list",
+  "memory_get",
+  "memory_invalidate",
+  "memory_reconsolidate",
+  "memory_operations",
+  // mental models
+  "mental_model_list",
+  "mental_model_get",
+  "mental_model_create",
+  "mental_model_update",
+  "mental_model_delete",
+  "mental_model_refresh",
+  "mental_model_clear",
+  // directives
+  "directive_list",
+  "directive_create",
+  "directive_delete",
+  // bank configuration
+  "bank_config_get",
+  "bank_config_set",
+  // documents
+  "document_ingest",
+  "document_ingest_file",
+  "document_list",
+  "document_delete"
+];
+var NAME_SET = new Set(TOOL_NAMES);
+
+// src/lib/config.ts
 var CONFIG_FILE = ".hindsight.json";
+var ENRICH_MAX_CHARS_LIMIT = 2e3;
+var ALLOW_TOKEN_COMMAND_ENV = "HINDSIGHT_ALLOW_TOKEN_COMMAND";
 var TUNING_DEFAULTS = {
   autoRecall: false,
   autoRetain: false,
@@ -502,13 +555,30 @@ var LEGACY_KEYS = {
 function isStringArray(v) {
   return Array.isArray(v) && v.every((x) => typeof x === "string" && x.length > 0);
 }
-function findConfigFile(cwd) {
-  let dir = normalize(resolve(cwd || process.cwd()));
+function isWithin(path2, root) {
+  return path2 === root || path2.startsWith(root.endsWith(sep) ? root : root + sep);
+}
+function gitToplevel(start, home) {
+  let dir = start;
   for (; ; ) {
-    const candidate = join2(dir, CONFIG_FILE);
-    if (existsSync(candidate)) return candidate;
+    if (existsSync(join2(dir, ".git"))) return dir;
     const parent = dirname2(dir);
-    if (parent === dir) return null;
+    if (dir === home || parent === dir) return null;
+    dir = parent;
+  }
+}
+function findConfigFile(cwd) {
+  const start = normalize(resolve(cwd || process.cwd()));
+  const home = normalize(resolve(process.env.HOME || homedir()));
+  const stop = gitToplevel(start, home) ?? (isWithin(start, home) ? home : start);
+  let dir = start;
+  for (; ; ) {
+    if (dir !== home) {
+      const candidate = join2(dir, CONFIG_FILE);
+      if (existsSync(candidate)) return candidate;
+    }
+    const parent = dirname2(dir);
+    if (dir === stop || parent === dir) return null;
     dir = parent;
   }
 }
@@ -519,24 +589,42 @@ function isDisabled(cwd = process.cwd(), configDir) {
   return ["1", "true", "yes", "on"].includes(env.toLowerCase());
 }
 function readToken(raw, configDir) {
-  const envKey = process.env.HINDSIGHT_API_KEY;
-  if (envKey) return { token: envKey.trim(), source: "env" };
+  const envKey = process.env.HINDSIGHT_API_KEY?.trim();
+  if (envKey && process.env.HINDSIGHT_URL) return { token: envKey, source: "env" };
   if (raw.tokenFile !== void 0) {
     if (typeof raw.tokenFile !== "string" || !raw.tokenFile) throw new Error("`tokenFile` must be a non-empty string");
     const path2 = isAbsolute(raw.tokenFile) ? raw.tokenFile : resolve(configDir, raw.tokenFile);
-    let text2;
+    let real;
+    let root;
     try {
-      text2 = readFileSync2(path2, "utf-8");
+      real = realpathSync(path2);
+      root = realpathSync(configDir);
     } catch (err) {
       throw new Error(`cannot read tokenFile ${path2}: ${err.code ?? err.message}`);
     }
-    const token = text2.trim();
+    if (real === root || !isWithin(real, root)) {
+      throw new Error(
+        `tokenFile ${path2} resolves outside ${root}, the directory holding ${CONFIG_FILE} \u2014 a token file must live next to the config that names it`
+      );
+    }
+    let text;
+    try {
+      text = readFileSync2(real, "utf-8");
+    } catch (err) {
+      throw new Error(`cannot read tokenFile ${path2}: ${err.code ?? err.message}`);
+    }
+    const token = text.trim();
     if (!token) throw new Error(`tokenFile ${path2} is empty`);
     return { token, source: "tokenFile" };
   }
   if (raw.tokenCommand !== void 0) {
     if (!isStringArray(raw.tokenCommand) || raw.tokenCommand.length === 0) {
       throw new Error("`tokenCommand` must be a non-empty array of strings (argv, no shell)");
+    }
+    if (process.env[ALLOW_TOKEN_COMMAND_ENV] !== "1") {
+      throw new Error(
+        `\`tokenCommand\` runs only when ${ALLOW_TOKEN_COMMAND_ENV}=1 is set in your environment \u2014 a config file a repository can commit must not run commands on its own`
+      );
     }
     const [cmd, ...args] = raw.tokenCommand;
     let out;
@@ -556,7 +644,19 @@ function readToken(raw, configDir) {
   }
   return { token: "", source: "none" };
 }
-function loadProjectConfig(cwd = process.cwd()) {
+function toolList(raw, key, problems) {
+  const v = raw[key];
+  if (v === void 0) return void 0;
+  if (!Array.isArray(v) || !v.every((x) => typeof x === "string" && x.length > 0)) {
+    problems.push(`\`${key}\` must be an array of tool names`);
+    return void 0;
+  }
+  const known = new Set(TOOL_NAMES);
+  const unknown = v.filter((n) => !known.has(n));
+  if (unknown.length) problems.push(`\`${key}\` names unknown tool(s) ${unknown.join(", ")}`);
+  return new Set(v);
+}
+function loadProjectConfig(cwd = process.cwd(), opts = {}) {
   const configPath = findConfigFile(cwd);
   if (!configPath) {
     return { active: false, reason: `no ${CONFIG_FILE} at or above ${resolve(cwd || process.cwd())}` };
@@ -595,9 +695,12 @@ function loadProjectConfig(cwd = process.cwd()) {
     tuning[key] = v;
   }
   if (!["low", "mid", "high"].includes(tuning.recallBudget)) problems.push("`recallBudget` must be low, mid or high");
-  if (!Number.isInteger(tuning.enrichMaxChars) || tuning.enrichMaxChars < 1) {
-    problems.push("`enrichMaxChars` must be a positive integer");
+  if (!Number.isInteger(tuning.enrichMaxChars) || tuning.enrichMaxChars < 1 || tuning.enrichMaxChars > ENRICH_MAX_CHARS_LIMIT) {
+    problems.push(`\`enrichMaxChars\` must be an integer from 1 to ${ENRICH_MAX_CHARS_LIMIT}`);
   }
+  const allow = toolList(raw, "allowTools", problems);
+  const deny = toolList(raw, "denyTools", problems);
+  const enabledTools = TOOL_NAMES.filter((n) => (!allow || allow.has(n)) && !deny?.has(n));
   const routing = {};
   if (raw.routing !== void 0) {
     if (!raw.routing || typeof raw.routing !== "object" || Array.isArray(raw.routing)) {
@@ -615,7 +718,7 @@ function loadProjectConfig(cwd = process.cwd()) {
     }
   }
   let token = { token: "", source: "none" };
-  if (problems.length === 0) {
+  if (problems.length === 0 && opts.token !== false) {
     try {
       token = readToken(raw, configDir);
     } catch (err) {
@@ -639,10 +742,14 @@ function loadProjectConfig(cwd = process.cwd()) {
       tokenSource: token.source,
       configPath,
       projectRoot: configDir,
-      routing
+      routing,
+      enabledTools
     }
   };
 }
+
+// src/lib/enrich.ts
+import { createHash } from "node:crypto";
 
 // src/lib/redact.ts
 var RULES = [
@@ -668,34 +775,35 @@ var RULES = [
   }
 ];
 var MAX_SCAN = 512 * 1024;
-function redact(text2) {
-  if (typeof text2 !== "string" || text2.length === 0) return text2;
-  if (text2.length > MAX_SCAN) {
-    return `[not redacted: ${text2.length} chars exceeds the ${MAX_SCAN}-char scan limit]`;
+function redact(text) {
+  if (typeof text !== "string" || text.length === 0) return text;
+  if (text.length > MAX_SCAN) {
+    return `[not redacted: ${text.length} chars exceeds the ${MAX_SCAN}-char scan limit]`;
   }
-  let out = text2;
+  let out = text;
   for (const rule of RULES) {
     const re = new RegExp(rule.re.source, rule.re.flags);
     out = out.replace(re, (...args) => {
       if (rule.keep === void 0) return `[redacted:${rule.kind}]`;
       const kept = String(args[rule.keep] ?? "");
-      const sep = String(args[rule.keep + 1] ?? "=");
-      return `${kept}${sep}[redacted:${rule.kind}]`;
+      const sep3 = String(args[rule.keep + 1] ?? "=");
+      return `${kept}${sep3}[redacted:${rule.kind}]`;
     });
   }
   return out;
 }
-function secretKinds(text2) {
-  if (typeof text2 !== "string" || text2.length === 0) return [];
-  if (text2.length > MAX_SCAN) return ["unscannable-length"];
+function secretKinds(text) {
+  if (typeof text !== "string" || text.length === 0) return [];
+  if (text.length > MAX_SCAN) return ["unscannable-length"];
   const kinds = /* @__PURE__ */ new Set();
   for (const rule of RULES) {
-    if (new RegExp(rule.re.source, rule.re.flags.replace("g", "")).test(text2)) kinds.add(rule.kind);
+    if (new RegExp(rule.re.source, rule.re.flags.replace("g", "")).test(text)) kinds.add(rule.kind);
   }
   return [...kinds];
 }
 
 // src/lib/enrich.ts
+var ENRICH_SOURCE_TAG = "source-tool:enrich";
 var ENRICH_KINDS = ["decision", "rejected", "lesson", "pitfall", "rule", "finding"];
 var KINDS = new Set(ENRICH_KINDS);
 var FIELDS = /* @__PURE__ */ new Set(["bank", "kind", "content", "context", "timestamp", "document_id", "tags", "metadata"]);
@@ -717,8 +825,8 @@ var EXTRA_RULES = [
 ];
 var UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 var GIT_SHA_RE = /\b[0-9a-f]{40}\b/gi;
-function hasLongToken(text2) {
-  const cleaned = text2.replace(UUID_RE, " ").replace(GIT_SHA_RE, " ");
+function hasLongToken(text) {
+  const cleaned = text.replace(UUID_RE, " ").replace(GIT_SHA_RE, " ");
   for (const run of cleaned.match(/[A-Za-z0-9_+/=-]{20,}/g) ?? []) {
     for (const seg of run.split(/[-_/+=]/)) {
       if (seg.length < 16) continue;
@@ -729,10 +837,10 @@ function hasLongToken(text2) {
   }
   return false;
 }
-function scanSensitive(text2) {
-  const kinds = new Set(secretKinds(text2));
-  for (const rule of EXTRA_RULES) if (rule.re.test(text2)) kinds.add(rule.kind);
-  if (hasLongToken(text2)) kinds.add("long-token");
+function scanSensitive(text) {
+  const kinds = new Set(secretKinds(text));
+  for (const rule of EXTRA_RULES) if (rule.re.test(text)) kinds.add(rule.kind);
+  if (hasLongToken(text)) kinds.add("long-token");
   return [...kinds];
 }
 function routeBank(repo, routing) {
@@ -744,10 +852,10 @@ function routeBank(repo, routing) {
   }
   return void 0;
 }
-function parseCandidates(text2, opts) {
+function parseCandidates(text, opts) {
   const out = { lines: 0, candidates: [], refused: [] };
   const firstLineOf = /* @__PURE__ */ new Map();
-  const rows = text2.split(/\r?\n/);
+  const rows = text.split(/\r?\n/);
   for (let i = 0; i < rows.length; i++) {
     const raw = rows[i].trim();
     if (!raw) continue;
@@ -827,7 +935,7 @@ function parseCandidates(text2, opts) {
       continue;
     }
     const kind = c.kind;
-    const tags = [.../* @__PURE__ */ new Set([...c.tags ?? [], `kind:${kind}`])];
+    const tags = [.../* @__PURE__ */ new Set([...c.tags ?? [], `kind:${kind}`, ENRICH_SOURCE_TAG])];
     const ts = c.timestamp;
     out.candidates.push({
       line,
@@ -860,8 +968,8 @@ async function mapLimit(items, limit, fn) {
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return results;
 }
-async function planEnrich(text2, opts, resolve3) {
-  const parsed = parseCandidates(text2, opts);
+async function planEnrich(bytes2, opts, resolve3) {
+  const parsed = parseCandidates(new TextDecoder().decode(bytes2), opts);
   const byBank = /* @__PURE__ */ new Map();
   for (const c of parsed.candidates) {
     const list = byBank.get(c.bank);
@@ -870,22 +978,65 @@ async function planEnrich(text2, opts, resolve3) {
   }
   const refused = [...parsed.refused];
   const banks = [];
-  for (const [bank, candidates] of byBank) {
+  for (const [bank, all] of byBank) {
     const client = await resolve3(bank);
     if (typeof client === "string") {
-      for (const c of candidates) refused.push({ line: c.line, documentId: c.item.document_id, reasons: [client] });
+      for (const c of all) refused.push({ line: c.line, documentId: c.item.document_id, reasons: [client] });
       continue;
     }
-    const found = await mapLimit(candidates, LOOKUP_CONCURRENCY, (c) => client.getDocument(c.item.document_id));
-    banks.push({
-      bank,
-      client,
-      candidates,
-      existing: candidates.filter((_, i) => found[i] !== null).map((c) => c.item.document_id)
-    });
+    const found = await mapLimit(all, LOOKUP_CONCURRENCY, (c) => client.getDocument(c.item.document_id));
+    const candidates = [];
+    const existing = [];
+    const foreign = [];
+    for (const [i, c] of all.entries()) {
+      const doc = found[i];
+      const id = c.item.document_id;
+      if (doc === null) {
+        candidates.push(c);
+        continue;
+      }
+      const ours = Array.isArray(doc.tags) && doc.tags.includes(ENRICH_SOURCE_TAG);
+      if (!ours && !opts.allowReplaceForeign) {
+        const units = typeof doc.memory_unit_count === "number" ? `${doc.memory_unit_count} memory unit(s)` : "its memories";
+        refused.push({
+          line: c.line,
+          documentId: id,
+          reasons: [
+            `document "${id}" already exists in bank "${bank}" and was not written by enrich \u2014 replacing it would delete ${units}. Choose another document_id, or pass allowReplaceForeign if replacing it is intended`
+          ]
+        });
+        continue;
+      }
+      candidates.push(c);
+      existing.push(id);
+      if (!ours) foreign.push(id);
+    }
+    if (candidates.length) banks.push({ bank, client, candidates, existing, foreign });
   }
   refused.sort((a, b) => a.line - b.line);
-  return { lines: parsed.lines, refused, banks };
+  const resolved = {
+    v: 1,
+    file: createHash("sha256").update(bytes2).digest("hex"),
+    allowReplaceForeign: opts.allowReplaceForeign === true,
+    banks: banks.map((b) => ({
+      bank: b.bank,
+      items: b.candidates.map((c) => c.item.document_id),
+      existing: [...b.existing].sort(),
+      foreign: [...b.foreign].sort()
+    })),
+    refused: refused.map((r) => [r.line, r.documentId ?? null, r.reasons])
+  };
+  const digest = createHash("sha256").update(JSON.stringify(resolved)).digest("hex");
+  return { lines: parsed.lines, refused, banks, digest };
+}
+function confirmRefusal(plan, confirm2) {
+  if (typeof confirm2 !== "string" || !confirm2) {
+    return "Refusing to apply: apply requires the digest printed by the dry run of this exact file. Run the dry run, have a human review the report, then apply with that digest. Nothing was written.";
+  }
+  if (confirm2.trim().toLowerCase() !== plan.digest) {
+    return "Refusing to apply: the file or the resolved plan changed since the dry run that produced this digest (an edited line, a different routing, or documents created or removed on the server). Dry-run again and review the new report. Nothing was written.";
+  }
+  return null;
 }
 async function applyEnrichPlan(plan, batchSize2 = DEFAULT_BATCH_SIZE) {
   const size = Math.min(Math.max(Math.floor(batchSize2), 1), MAX_BATCH_SIZE);
@@ -915,6 +1066,7 @@ function enrichSummary(file2, plan, applied) {
   return {
     file: file2,
     mode: applied ? "apply" : "dry-run",
+    digest: plan.digest,
     lines: plan.lines,
     accepted: plan.banks.reduce((n, b) => n + b.candidates.length, 0),
     refused: plan.refused,
@@ -924,7 +1076,8 @@ function enrichSummary(file2, plan, applied) {
       kinds: Object.fromEntries(
         ENRICH_KINDS.map((k) => [k, b.candidates.filter((c) => c.kind === k).length]).filter(([, n]) => n)
       ),
-      existing: b.existing
+      existing: b.existing,
+      foreign: b.foreign
     })),
     ...applied ? { batches: applied } : {}
   };
@@ -935,6 +1088,7 @@ function formatEnrichReport(file2, plan, applied, opts = {}) {
   const out = [];
   out.push(applied ? `APPLY \u2014 ${file2}` : `DRY RUN \u2014 nothing written \u2014 ${file2}`);
   out.push(`lines ${plan.lines} \xB7 accepted ${accepted} \xB7 refused ${plan.refused.length}`);
+  out.push(`digest ${plan.digest}`);
   out.push("");
   if (plan.banks.length === 0) out.push("No item is writable.");
   for (const b of plan.banks) {
@@ -948,7 +1102,9 @@ function formatEnrichReport(file2, plan, applied, opts = {}) {
       out.push(`  line ${r.line}${r.documentId ? ` [${r.documentId}]` : ""}: ${r.reasons.join("; ")}`);
     }
   }
-  const existing = plan.banks.flatMap((b) => b.existing.map((id) => `  ${b.bank}  ${id}`));
+  const existing = plan.banks.flatMap(
+    (b) => b.existing.map((id) => `  ${b.bank}  ${id}${b.foreign.includes(id) ? "  (NOT written by enrich \u2014 allowReplaceForeign)" : ""}`)
+  );
   if (existing.length) {
     const shown = existing.slice(0, 20);
     out.push("", `already on the server (${existing.length}) \u2014 same document_id, ${applied ? "replaced" : "apply replaces them"}:`);
@@ -973,9 +1129,9 @@ function formatEnrichReport(file2, plan, applied, opts = {}) {
       out.push("", "samples:");
       for (const b of plan.banks) {
         for (const c of b.candidates.slice(0, samples2)) {
-          const text2 = c.item.content.replace(/\s+/g, " ");
+          const text = c.item.content.replace(/\s+/g, " ");
           out.push(`  [${b.bank}] ${c.kind} ${c.item.document_id} (${c.item.timestamp?.slice(0, 10)})`);
-          out.push(`    ${redact(text2.length > 240 ? text2.slice(0, 240) + "\u2026" : text2)}`);
+          out.push(`    ${redact(text.length > 240 ? text.slice(0, 240) + "\u2026" : text)}`);
         }
       }
     }
@@ -988,9 +1144,32 @@ function formatEnrichReport(file2, plan, applied, opts = {}) {
   return out.join("\n");
 }
 
+// src/lib/paths.ts
+import { realpathSync as realpathSync2, statSync } from "node:fs";
+import { resolve as resolve2, sep as sep2 } from "node:path";
+var MAX_PROJECT_FILE_BYTES = 2 * 1024 * 1024;
+function assertInsideProject(input, projectRoot) {
+  const root = realpathSync2(resolve2(projectRoot));
+  let real;
+  try {
+    real = realpathSync2(resolve2(input));
+  } catch (err) {
+    throw new Error(`cannot resolve ${input}: ${err.message}`);
+  }
+  if (real !== root && !real.startsWith(root + sep2)) {
+    throw new Error(
+      `refusing to read ${input}: it resolves to ${real}, which is outside the project root ${root}. Symlinks are followed before this check, so a link pointing out of the project is refused too.`
+    );
+  }
+  const size = statSync(real).size;
+  if (size > MAX_PROJECT_FILE_BYTES) {
+    throw new Error(`refusing to read ${real}: ${size} bytes exceeds the ${MAX_PROJECT_FILE_BYTES}-byte cap`);
+  }
+  return real;
+}
+
 // src/enrich.ts
-var MAX_FILE_BYTES = 2 * 1024 * 1024;
-var USAGE = "usage: enrich.mjs <candidates.jsonl> [--apply] [--max-chars N] [--batch-size N] [--samples N] [--json]";
+var USAGE = `usage: enrich.mjs <candidates.jsonl> [--apply --confirm <digest>] [--allow-replace-foreign] [--max-chars N (\u2264 ${ENRICH_MAX_CHARS_LIMIT})] [--batch-size N] [--samples N] [--json]`;
 function fail(code, message) {
   process.stderr.write(`${message}
 `);
@@ -999,6 +1178,8 @@ function fail(code, message) {
 var argv = process.argv.slice(2);
 var file;
 var apply = false;
+var confirm;
+var allowReplaceForeign = false;
 var json = false;
 var maxChars;
 var batchSize = DEFAULT_BATCH_SIZE;
@@ -1012,9 +1193,17 @@ ${USAGE}`);
     return n;
   };
   if (a === "--apply") apply = true;
+  else if (a === "--confirm") {
+    confirm = argv[++i];
+    if (!confirm) fail(2, `--confirm needs the digest from the dry run
+${USAGE}`);
+  } else if (a === "--allow-replace-foreign") allowReplaceForeign = true;
   else if (a === "--json") json = true;
-  else if (a === "--max-chars") maxChars = num();
-  else if (a === "--batch-size") batchSize = num();
+  else if (a === "--max-chars") {
+    maxChars = num();
+    if (maxChars < 1 || maxChars > ENRICH_MAX_CHARS_LIMIT) fail(2, `--max-chars must be 1..${ENRICH_MAX_CHARS_LIMIT}
+${USAGE}`);
+  } else if (a === "--batch-size") batchSize = num();
   else if (a === "--samples") samples = num();
   else if (a === "-h" || a === "--help") fail(0, USAGE);
   else if (a.startsWith("-")) fail(2, `unknown option ${a}
@@ -1024,31 +1213,36 @@ ${USAGE}`);
 ${USAGE}`);
 }
 if (!file) fail(2, USAGE);
+if (confirm !== void 0 && !apply) fail(2, `--confirm only makes sense with --apply
+${USAGE}`);
 var loaded = loadProjectConfig(process.cwd());
 if (!loaded.active) fail(1, `Hindsight is not configured here: ${loaded.reason}`);
 var config = loaded.config;
-var path = resolve2(file);
-var text;
+var path;
+var bytes;
 try {
-  const size = statSync(path).size;
-  if (size > MAX_FILE_BYTES) fail(1, `refusing ${path}: ${size} bytes exceeds the ${MAX_FILE_BYTES}-byte cap`);
-  text = readFileSync3(path, "utf-8");
+  path = assertInsideProject(file, config.projectRoot);
+  bytes = readFileSync3(path);
 } catch (err) {
-  fail(1, `cannot read ${path}: ${err.code ?? err.message}`);
+  fail(1, err.message);
 }
 var gate = new BankGate(config);
 try {
   const plan = await planEnrich(
-    text,
-    { maxChars: maxChars ?? config.enrichMaxChars, routing: config.routing },
+    bytes,
+    { maxChars: maxChars ?? config.enrichMaxChars, routing: config.routing, allowReplaceForeign },
     (b) => gate.resolve(b)
   );
+  if (apply) {
+    const refusal = confirmRefusal(plan, confirm);
+    if (refusal) fail(1, refusal);
+  }
   const applied = apply ? await applyEnrichPlan(plan, batchSize) : void 0;
   process.stdout.write(
     (json ? JSON.stringify(enrichSummary(path, plan, applied), null, 2) : formatEnrichReport(path, plan, applied, {
       samples,
       batchSize,
-      applyHint: "Re-run with --apply after a human has reviewed this summary."
+      applyHint: `After a human has reviewed this summary, re-run with --apply --confirm ${plan.digest}` + (allowReplaceForeign ? " --allow-replace-foreign" : "") + (maxChars !== void 0 ? ` --max-chars ${maxChars}` : "")
     })) + "\n"
   );
   if (applied?.some((r) => r.error)) process.exit(1);

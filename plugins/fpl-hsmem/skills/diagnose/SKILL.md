@@ -84,8 +84,9 @@ Look for:
 ## Step 5 — Config resolution
 
 There is one source: the nearest `.hindsight.json` at or above cwd (see
-CONFIGURATION.md). Only `HINDSIGHT_URL` / `HINDSIGHT_API_KEY` may override its
-url and token, and only once it exists. Show the user `config_file`,
+CONFIGURATION.md), walking no further than the git toplevel and never
+`$HOME/.hindsight.json`. Only `HINDSIGHT_URL` may override its url, and `HINDSIGHT_API_KEY` is
+used only together with it. Show the user `config_file`,
 `default_bank`, `allowed_banks`, `url` and `token_source` from
 `memory_get_current_bank` — never the token itself.
 

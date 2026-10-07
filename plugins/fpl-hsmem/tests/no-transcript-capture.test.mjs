@@ -1,4 +1,6 @@
 import { join } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { check, finish, project, fakeHindsight, runHook } from "./lib/harness.mjs";
 
 const fake = await fakeHindsight(["alpha"]);
@@ -11,8 +13,10 @@ const writes = () => fake.requests.filter((r) => r.method === "POST" && r.path.e
 async function run(cfg, label) {
   const dir = project({ url: fake.url, banks: ["alpha", "ghost"], defaultBank: "alpha", tokenFile: "t", retainEveryNTurns: 1, ...cfg }, { t: "tok", "tr.jsonl": transcript });
   const input = { cwd: dir, session_id: "sess-1", transcript_path: join(dir, "tr.jsonl"), reason: "exit" };
+  // A fresh home per run: hook state (turn counters) lives under $HOME and must not leak between runs.
+  const home = mkdtempSync(join(tmpdir(), "hsmem-home-"));
   const before = writes().length;
-  for (const hook of ["retain.mjs", "session-end.mjs"]) await runHook(hook, input, { HOME: dir });
+  for (const hook of ["retain.mjs", "session-end.mjs"]) await runHook(hook, input, { HOME: home });
   return writes().length - before;
 }
 

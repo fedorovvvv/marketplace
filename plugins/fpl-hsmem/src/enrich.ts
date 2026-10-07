@@ -3,35 +3,36 @@
  * Batch enrichment CLI — the same pipeline as the `memory_retain_batch` tool, for a human at a
  * shell or a bot host that runs commands rather than MCP tools.
  *
- *   node dist/enrich.mjs <candidates.jsonl> [--apply] [--max-chars N] [--batch-size N]
- *                        [--samples N] [--json]
+ *   node dist/enrich.mjs <candidates.jsonl> [--apply --confirm <digest>] [--allow-replace-foreign]
+ *                        [--max-chars N] [--batch-size N] [--samples N] [--json]
  *
  * Configuration is the project's `.hindsight.json`, found walking up from the working directory —
- * the same file, allowlist and `routing` the MCP server uses. Dry run is the default: nothing is
- * written without `--apply`.
+ * the same file, allowlist and `routing` the MCP server uses, and the same rule that the file must
+ * be inside the project. Dry run is the default: nothing is written without `--apply`, and apply
+ * needs `--confirm` with the digest the dry run of this exact file printed.
  *
  * Exit codes: 0 — every line accepted (and, with --apply, every batch queued); 3 — some lines
- * refused (the rest were planned / written); 1 — config, file, server or batch failure; 2 — usage.
+ * refused (the rest were planned / written); 1 — config, file, server, confirmation or batch
+ * failure; 2 — usage.
  */
 
-import { readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import { BankGate } from "./lib/banks.js";
-import { loadProjectConfig } from "./lib/config.js";
+import { ENRICH_MAX_CHARS_LIMIT, loadProjectConfig } from "./lib/config.js";
 import {
   DEFAULT_BATCH_SIZE,
   applyEnrichPlan,
+  confirmRefusal,
   enrichSummary,
   formatEnrichReport,
   planEnrich,
 } from "./lib/enrich.js";
+import { assertInsideProject } from "./lib/paths.js";
 import { redact } from "./lib/redact.js";
 
-/** Same ceiling as document_ingest_file: a candidates file is curated items, not a corpus. */
-const MAX_FILE_BYTES = 2 * 1024 * 1024;
-
 const USAGE =
-  "usage: enrich.mjs <candidates.jsonl> [--apply] [--max-chars N] [--batch-size N] [--samples N] [--json]";
+  "usage: enrich.mjs <candidates.jsonl> [--apply --confirm <digest>] [--allow-replace-foreign] " +
+  `[--max-chars N (≤ ${ENRICH_MAX_CHARS_LIMIT})] [--batch-size N] [--samples N] [--json]`;
 
 function fail(code: number, message: string): never {
   process.stderr.write(`${message}\n`);
@@ -41,6 +42,8 @@ function fail(code: number, message: string): never {
 const argv = process.argv.slice(2);
 let file: string | undefined;
 let apply = false;
+let confirm: string | undefined;
+let allowReplaceForeign = false;
 let json = false;
 let maxChars: number | undefined;
 let batchSize = DEFAULT_BATCH_SIZE;
@@ -53,9 +56,15 @@ for (let i = 0; i < argv.length; i++) {
     return n;
   };
   if (a === "--apply") apply = true;
+  else if (a === "--confirm") {
+    confirm = argv[++i];
+    if (!confirm) fail(2, `--confirm needs the digest from the dry run\n${USAGE}`);
+  } else if (a === "--allow-replace-foreign") allowReplaceForeign = true;
   else if (a === "--json") json = true;
-  else if (a === "--max-chars") maxChars = num();
-  else if (a === "--batch-size") batchSize = num();
+  else if (a === "--max-chars") {
+    maxChars = num();
+    if (maxChars < 1 || maxChars > ENRICH_MAX_CHARS_LIMIT) fail(2, `--max-chars must be 1..${ENRICH_MAX_CHARS_LIMIT}\n${USAGE}`);
+  } else if (a === "--batch-size") batchSize = num();
   else if (a === "--samples") samples = num();
   else if (a === "-h" || a === "--help") fail(0, USAGE);
   else if (a.startsWith("-")) fail(2, `unknown option ${a}\n${USAGE}`);
@@ -63,26 +72,33 @@ for (let i = 0; i < argv.length; i++) {
   else fail(2, `one file at a time\n${USAGE}`);
 }
 if (!file) fail(2, USAGE);
+if (confirm !== undefined && !apply) fail(2, `--confirm only makes sense with --apply\n${USAGE}`);
 
 const loaded = loadProjectConfig(process.cwd());
 if (!loaded.active) fail(1, `Hindsight is not configured here: ${loaded.reason}`);
 const config = loaded.config;
 
-const path = resolve(file);
-let text: string;
+let path: string;
+let bytes: Buffer;
 try {
-  const size = statSync(path).size;
-  if (size > MAX_FILE_BYTES) fail(1, `refusing ${path}: ${size} bytes exceeds the ${MAX_FILE_BYTES}-byte cap`);
-  text = readFileSync(path, "utf-8");
+  // The same rule as the MCP tool: only a file inside the project, symlinks followed, size-capped.
+  path = assertInsideProject(file, config.projectRoot);
+  bytes = readFileSync(path);
 } catch (err) {
-  fail(1, `cannot read ${path}: ${(err as NodeJS.ErrnoException).code ?? (err as Error).message}`);
+  fail(1, (err as Error).message);
 }
 
 const gate = new BankGate(config);
 try {
-  const plan = await planEnrich(text, { maxChars: maxChars ?? config.enrichMaxChars, routing: config.routing }, (b) =>
-    gate.resolve(b),
+  const plan = await planEnrich(
+    bytes,
+    { maxChars: maxChars ?? config.enrichMaxChars, routing: config.routing, allowReplaceForeign },
+    (b) => gate.resolve(b),
   );
+  if (apply) {
+    const refusal = confirmRefusal(plan, confirm);
+    if (refusal) fail(1, refusal);
+  }
   const applied = apply ? await applyEnrichPlan(plan, batchSize) : undefined;
   process.stdout.write(
     (json
@@ -90,7 +106,10 @@ try {
       : formatEnrichReport(path, plan, applied, {
           samples,
           batchSize,
-          applyHint: "Re-run with --apply after a human has reviewed this summary.",
+          applyHint:
+            `After a human has reviewed this summary, re-run with --apply --confirm ${plan.digest}` +
+            (allowReplaceForeign ? " --allow-replace-foreign" : "") +
+            (maxChars !== undefined ? ` --max-chars ${maxChars}` : ""),
         })) + "\n",
   );
   if (applied?.some((r) => r.error)) process.exit(1);

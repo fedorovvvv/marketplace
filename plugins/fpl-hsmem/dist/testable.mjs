@@ -60,6 +60,345 @@ function assertBankId(value) {
   }
   return v;
 }
+var HindsightClient = class {
+  url;
+  apiKey;
+  bankId;
+  constructor(url, bankId, apiKey = "") {
+    this.url = url.replace(/\/$/, "");
+    this.bankId = bankId;
+    this.apiKey = apiKey;
+  }
+  get bank() {
+    return this.bankId;
+  }
+  headers() {
+    const h = {
+      "Content-Type": "application/json",
+      "User-Agent": USER_AGENT
+    };
+    if (this.apiKey) h["Authorization"] = `Bearer ${this.apiKey}`;
+    return h;
+  }
+  bankPath(bankId) {
+    return `/v1/default/banks/${encodeURIComponent(assertBankId(bankId ?? this.bankId))}`;
+  }
+  /**
+   * Build a bank-scoped path from an ARRAY of segments, never a joined string. Each segment is
+   * validated and encoded separately, and the assembled path is then checked to still sit under
+   * the bank prefix — so a segment that somehow escapes validation still cannot re-address the
+   * request at the bank base or above it.
+   */
+  bankUrl(segments, query, bankId) {
+    const prefix = this.bankPath(bankId);
+    const tail = segments.map((s, i) => encodeURIComponent(assertPathId(s, `segment ${i}`))).join("/");
+    const path = tail ? `${prefix}/${tail}` : prefix;
+    if (!path.startsWith(`${prefix}/`) || path.length <= prefix.length + 1) {
+      throw new Error(`refusing to build a request outside ${prefix}`);
+    }
+    const qs = query ? "?" + Object.entries(query).flatMap(([k, v]) => (Array.isArray(v) ? v : [v]).map((x) => `${encodeURIComponent(k)}=${encodeURIComponent(x)}`)).join("&") : "";
+    return path + qs;
+  }
+  async request(method, path, body, timeoutMs = 15e3) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      let res;
+      try {
+        res = await fetch(`${this.url}${path}`, {
+          method,
+          headers: this.headers(),
+          body: body ? JSON.stringify(body) : void 0,
+          signal: controller.signal,
+          redirect: "error"
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/redirect/i.test(msg)) {
+          throw new Error(
+            `${method} ${path} was answered with a redirect, which this client refuses to follow (a redirect can downgrade the scheme and silently drop the Authorization header)`
+          );
+        }
+        throw err;
+      }
+      const text = await res.text();
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} from ${path}: ${text}`);
+      }
+      return text ? JSON.parse(text) : {};
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  async health(timeoutMs = 5e3) {
+    try {
+      await this.request("GET", "/health", void 0, timeoutMs);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  /**
+   * Whether `bankId` exists on the server, without creating it.
+   *
+   * Hindsight creates a bank implicitly on the first bank-scoped write (and several reads), so
+   * "just try it" is how orphan banks are born. This asks the bank list instead — `GET
+   * /v1/default/banks?q=` is a substring filter, so the match is checked exactly here — and that
+   * endpoint never creates anything.
+   */
+  async bankExists(bankId, timeoutMs = 1e4) {
+    const res = await this.request(
+      "GET",
+      `/v1/default/banks?q=${encodeURIComponent(assertBankId(bankId))}&limit=1000`,
+      void 0,
+      timeoutMs
+    );
+    return (res.banks ?? []).some((b) => b.bank_id === bankId);
+  }
+  async retain(items, options = {}) {
+    const list = Array.isArray(items) ? items : [items];
+    return this.request(
+      "POST",
+      `${this.bankPath(options.bankId)}/memories`,
+      { items: list, async: options.async ?? true },
+      options.timeoutMs ?? 15e3
+    );
+  }
+  async recall(query, options = {}) {
+    const body = {
+      query,
+      max_tokens: options.maxTokens ?? 1024
+    };
+    if (options.budget) body.budget = options.budget;
+    if (options.types && options.types.length > 0) body.types = options.types;
+    return this.request(
+      "POST",
+      `${this.bankPath(options.bankId)}/memories/recall`,
+      body,
+      options.timeoutMs ?? 1e4
+    );
+  }
+  /**
+   * Upstream reflect measured 49-70 s; the old 30 s ceiling aborted real answers and reported them
+   * as empty. The response field is `text` (ReflectResponse in the live OpenAPI), not `response`.
+   */
+  async reflect(query, options = {}) {
+    const body = { query };
+    if (options.maxTokens) body.max_tokens = options.maxTokens;
+    return this.request("POST", `${this.bankPath()}/reflect`, body, options.timeoutMs ?? 12e4);
+  }
+  /**
+   * Exact-id document lookup. The `q` list filter matches substrings, which is not existence.
+   * Document ids may carry `:` (see DOCUMENT_ID_RE), so the segment is validated here rather than
+   * by `bankUrl`.
+   */
+  async getDocument(id) {
+    try {
+      return await this.request(
+        "GET",
+        `${this.bankPath()}/documents/${encodeURIComponent(assertPathId(id, "document id", true))}`,
+        void 0,
+        1e4
+      );
+    } catch (err) {
+      if (err instanceof Error && /HTTP 404/.test(err.message)) return null;
+      throw err;
+    }
+  }
+  async stats(timeoutMs = 5e3) {
+    return this.request("GET", `${this.bankPath()}/stats`, void 0, timeoutMs);
+  }
+  async listMentalModels(detail = "metadata") {
+    return this.request("GET", `${this.bankPath()}/mental-models?detail=${detail}`);
+  }
+  async getMentalModel(id, detail = "content") {
+    return this.request("GET", this.bankUrl(["mental-models", id], { detail }));
+  }
+  async createMentalModel(args) {
+    return this.request("POST", `${this.bankPath()}/mental-models`, {
+      id: assertPathId(args.id, "mental model id"),
+      name: args.name,
+      source_query: args.sourceQuery,
+      max_tokens: args.maxTokens ?? 4096,
+      trigger: {
+        mode: "delta",
+        refresh_after_consolidation: true,
+        fact_types: ["observation"],
+        exclude_mental_models: true
+      }
+    });
+  }
+  async updateMentalModel(id, updates) {
+    const body = {};
+    if (updates.name) body.name = updates.name;
+    if (updates.sourceQuery) body.source_query = updates.sourceQuery;
+    return this.request("PATCH", this.bankUrl(["mental-models", id]), body);
+  }
+  async deleteMentalModel(id) {
+    return this.request("DELETE", this.bankUrl(["mental-models", id]));
+  }
+  /**
+   * Only `reflect_mission`. `retain_mission` steers WHAT GETS EXTRACTED on every future retain, so
+   * an agent able to set it can rewrite the memory rules for everything that follows — through a
+   * tool that reads as cosmetic. Extraction control is an operator setting, not a tool argument.
+   *
+   * Hindsight 0.10: `PATCH /config {"updates":{"reflect_mission":…}}` — never the removed
+   * `PUT /profile` / `POST /background`, which now answer 410.
+   */
+  async setMission(mission) {
+    return this.request("PATCH", `${this.bankPath()}/config`, {
+      updates: { reflect_mission: mission }
+    });
+  }
+  // ---------------------------------------------------------------------------------------------
+  // Browsing and correcting individual memories.
+  //
+  // `recall` answers "what is relevant to this question" and is what the hook calls on every
+  // prompt. These answer a different question — "which stored row is the wrong one" — and that is
+  // the question you must answer before you can correct anything. Without them the relay could
+  // add facts and never fix one.
+  // ---------------------------------------------------------------------------------------------
+  /**
+   * Enumerate stored memories by structured filter. `q` is a literal substring, not a search.
+   *
+   * Parameter names are MEASURED against the live API, not transcribed from documentation. Three
+   * plausible spellings are silently ignored by the server — it answers 200 and returns the
+   * unfiltered set — so a tool built on them would report "showing world facts" while showing
+   * everything. Verified honoured: `type` (SINGULAR — `types` is ignored), `state`, `document_id`,
+   * `q`, `tags`. Verified ignored: `types`, `fact_type`.
+   */
+  async listMemories(options = {}) {
+    const query = {
+      limit: String(options.limit ?? 10),
+      offset: String(options.offset ?? 0)
+    };
+    if (options.q) query.q = options.q;
+    if (options.type) query.type = options.type;
+    if (options.state && options.state !== "all") query.state = options.state;
+    if (options.documentId) query.document_id = assertPathId(options.documentId, "document_id");
+    if (options.tags?.length) query.tags = options.tags;
+    return this.request(
+      "GET",
+      this.bankUrl(["memories", "list"], query),
+      void 0,
+      options.timeoutMs ?? 2e4
+    );
+  }
+  async getMemory(id) {
+    return this.request("GET", this.bankUrl(["memories", id]), void 0, 15e3);
+  }
+  /**
+   * Mark a memory invalid, or restore one.
+   *
+   * This is deliberately the ONLY memory mutation the relay exposes. Rewriting a memory's text is
+   * irreversible upstream — it re-embeds, drops the derived observations and re-consolidates — so
+   * the correction path is "retire the wrong fact, write the right one", which leaves the wrong
+   * one readable and undoable. `reason` is what a future reader sees instead of a silent gap.
+   */
+  async invalidateMemory(id, reason, restore = false) {
+    const body = restore ? { state: "valid" } : { state: "invalidated", ...reason ? { invalidation_reason: reason } : {} };
+    return this.request("PATCH", this.bankUrl(["memories", id]), body, 15e3);
+  }
+  /**
+   * Drop one memory's derived observations so consolidation rebuilds them.
+   *
+   * The memory itself survives. Use after invalidating a fact that a belief was built on — the
+   * belief does not notice on its own, and recall keeps returning the conclusion drawn from the
+   * fact you just retired.
+   */
+  async reconsolidateMemory(id) {
+    return this.request("DELETE", this.bankUrl(["memories", id, "observations"]), void 0, 2e4);
+  }
+  // ---------------------------------------------------------------------------------------------
+  // Asynchronous work. Retain returns before the server has finished thinking; these say whether
+  // it finished, and that is the answer to "why does recall still return the old fact".
+  // ---------------------------------------------------------------------------------------------
+  /**
+   * List async operations. The response array is `operations`, NOT `items` — this endpoint is
+   * shaped differently from every other list on the API.
+   *
+   * `status` is the only filter the server honours (measured: `status=failed` narrowed 1085 → 6).
+   * Filtering by kind is deliberately absent: `task_type`, `operation_type` and `kind` are all
+   * accepted with a 200 and then ignored, so offering a kind filter would mean reporting a
+   * narrowed view that was never narrowed. Callers that need it filter the returned page.
+   */
+  async listOperations(options = {}) {
+    const query = {
+      limit: String(options.limit ?? 20),
+      offset: String(options.offset ?? 0)
+    };
+    if (options.status) query.status = options.status;
+    return this.request("GET", this.bankUrl(["operations"], query), void 0, 2e4);
+  }
+  async getOperation(id) {
+    return this.request("GET", this.bankUrl(["operations", id]), void 0, 15e3);
+  }
+  // ---------------------------------------------------------------------------------------------
+  // Mental models: the two lifecycle operations that were missing.
+  // ---------------------------------------------------------------------------------------------
+  /** Force a rebuild now instead of waiting for consolidation. Returns an operation id. */
+  async refreshMentalModel(id) {
+    return this.request("POST", this.bankUrl(["mental-models", id, "refresh"]), {}, 2e4);
+  }
+  /**
+   * Blank a page's content, keeping its configuration.
+   *
+   * Our pages are created in `delta` mode, which edits existing content rather than regenerating
+   * it — so a page that has drifted keeps drifting. Clearing removes the baseline, and the next
+   * refresh is a full rebuild. POST, not DELETE: DELETE on this resource removes the page itself.
+   */
+  async clearMentalModel(id) {
+    return this.request("POST", this.bankUrl(["mental-models", id, "clear"]), {}, 2e4);
+  }
+  // ---------------------------------------------------------------------------------------------
+  // Directives — standing instructions that govern synthesis. Without them every reflect is
+  // ungoverned, which is the state this bank is in today.
+  // ---------------------------------------------------------------------------------------------
+  async listDirectives() {
+    return this.request("GET", this.bankUrl(["directives"]), void 0, 15e3);
+  }
+  async createDirective(args) {
+    const body = { name: args.name, content: args.content };
+    if (args.priority !== void 0) body.priority = args.priority;
+    if (args.isActive !== void 0) body.is_active = args.isActive;
+    if (args.tags?.length) body.tags = args.tags;
+    return this.request("POST", this.bankUrl(["directives"]), body, 15e3);
+  }
+  async deleteDirective(id) {
+    return this.request("DELETE", this.bankUrl(["directives", id]), void 0, 15e3);
+  }
+  // ---------------------------------------------------------------------------------------------
+  // Bank configuration. Hindsight 0.10 removed `GET/PUT /profile` and `POST /background` (both
+  // answer 410); the mission now lives here as `reflect_mission`, next to the behavioural switches.
+  // ---------------------------------------------------------------------------------------------
+  async getBankConfig() {
+    return this.request("GET", `${this.bankPath()}/config`, void 0, 15e3);
+  }
+  /**
+   * Write behavioural settings. The caller decides WHICH keys are allowed — see the allowlist in
+   * `index.ts`. This method deliberately does not police key names: one policy, one place, and
+   * that place is the tool handler where the refusal can be explained to the caller.
+   */
+  async setBankConfig(updates) {
+    return this.request("PATCH", `${this.bankPath()}/config`, { updates }, 15e3);
+  }
+  // ---------------------------------------------------------------------------------------------
+  // Documents. `memory_unit_count` is the blast-radius number nothing else provides: it is how
+  // many memories die with the document.
+  // ---------------------------------------------------------------------------------------------
+  async listDocuments(options = {}) {
+    const query = {
+      limit: String(options.limit ?? 10),
+      offset: String(options.offset ?? 0)
+    };
+    if (options.q) query.q = options.q;
+    return this.request("GET", this.bankUrl(["documents"], query), void 0, 2e4);
+  }
+  /** Irreversible. Cascades to every memory extracted from the document. */
+  async deleteDocument(id) {
+    return this.request("DELETE", this.bankUrl(["documents", id]), void 0, 3e4);
+  }
+};
 
 // src/lib/tool-names.ts
 var TOOL_NAMES = [
@@ -159,8 +498,8 @@ function redact(text) {
     out = out.replace(re, (...args) => {
       if (rule.keep === void 0) return `[redacted:${rule.kind}]`;
       const kept = String(args[rule.keep] ?? "");
-      const sep = String(args[rule.keep + 1] ?? "=");
-      return `${kept}${sep}[redacted:${rule.kind}]`;
+      const sep3 = String(args[rule.keep + 1] ?? "=");
+      return `${kept}${sep3}[redacted:${rule.kind}]`;
     });
   }
   return out;
@@ -198,10 +537,13 @@ function redactDeep(value, depth = 0) {
 }
 
 // src/lib/config.ts
-import { readFileSync as readFileSync2, existsSync } from "node:fs";
+import { readFileSync as readFileSync2, existsSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname as dirname2, isAbsolute, join as join2, normalize, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname as dirname2, isAbsolute, join as join2, normalize, resolve, sep } from "node:path";
 var CONFIG_FILE = ".hindsight.json";
+var ENRICH_MAX_CHARS_LIMIT = 2e3;
+var ALLOW_TOKEN_COMMAND_ENV = "HINDSIGHT_ALLOW_TOKEN_COMMAND";
 var TUNING_DEFAULTS = {
   autoRecall: false,
   autoRetain: false,
@@ -250,13 +592,30 @@ var LEGACY_KEYS = {
 function isStringArray(v) {
   return Array.isArray(v) && v.every((x) => typeof x === "string" && x.length > 0);
 }
-function findConfigFile(cwd) {
-  let dir = normalize(resolve(cwd || process.cwd()));
+function isWithin(path, root) {
+  return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
+}
+function gitToplevel(start, home) {
+  let dir = start;
   for (; ; ) {
-    const candidate = join2(dir, CONFIG_FILE);
-    if (existsSync(candidate)) return candidate;
+    if (existsSync(join2(dir, ".git"))) return dir;
     const parent = dirname2(dir);
-    if (parent === dir) return null;
+    if (dir === home || parent === dir) return null;
+    dir = parent;
+  }
+}
+function findConfigFile(cwd) {
+  const start = normalize(resolve(cwd || process.cwd()));
+  const home = normalize(resolve(process.env.HOME || homedir()));
+  const stop = gitToplevel(start, home) ?? (isWithin(start, home) ? home : start);
+  let dir = start;
+  for (; ; ) {
+    if (dir !== home) {
+      const candidate = join2(dir, CONFIG_FILE);
+      if (existsSync(candidate)) return candidate;
+    }
+    const parent = dirname2(dir);
+    if (dir === stop || parent === dir) return null;
     dir = parent;
   }
 }
@@ -267,14 +626,27 @@ function isDisabled(cwd = process.cwd(), configDir) {
   return ["1", "true", "yes", "on"].includes(env.toLowerCase());
 }
 function readToken(raw, configDir) {
-  const envKey = process.env.HINDSIGHT_API_KEY;
-  if (envKey) return { token: envKey.trim(), source: "env" };
+  const envKey = process.env.HINDSIGHT_API_KEY?.trim();
+  if (envKey && process.env.HINDSIGHT_URL) return { token: envKey, source: "env" };
   if (raw.tokenFile !== void 0) {
     if (typeof raw.tokenFile !== "string" || !raw.tokenFile) throw new Error("`tokenFile` must be a non-empty string");
     const path = isAbsolute(raw.tokenFile) ? raw.tokenFile : resolve(configDir, raw.tokenFile);
+    let real;
+    let root;
+    try {
+      real = realpathSync(path);
+      root = realpathSync(configDir);
+    } catch (err) {
+      throw new Error(`cannot read tokenFile ${path}: ${err.code ?? err.message}`);
+    }
+    if (real === root || !isWithin(real, root)) {
+      throw new Error(
+        `tokenFile ${path} resolves outside ${root}, the directory holding ${CONFIG_FILE} \u2014 a token file must live next to the config that names it`
+      );
+    }
     let text;
     try {
-      text = readFileSync2(path, "utf-8");
+      text = readFileSync2(real, "utf-8");
     } catch (err) {
       throw new Error(`cannot read tokenFile ${path}: ${err.code ?? err.message}`);
     }
@@ -285,6 +657,11 @@ function readToken(raw, configDir) {
   if (raw.tokenCommand !== void 0) {
     if (!isStringArray(raw.tokenCommand) || raw.tokenCommand.length === 0) {
       throw new Error("`tokenCommand` must be a non-empty array of strings (argv, no shell)");
+    }
+    if (process.env[ALLOW_TOKEN_COMMAND_ENV] !== "1") {
+      throw new Error(
+        `\`tokenCommand\` runs only when ${ALLOW_TOKEN_COMMAND_ENV}=1 is set in your environment \u2014 a config file a repository can commit must not run commands on its own`
+      );
     }
     const [cmd, ...args] = raw.tokenCommand;
     let out;
@@ -304,7 +681,19 @@ function readToken(raw, configDir) {
   }
   return { token: "", source: "none" };
 }
-function loadProjectConfig(cwd = process.cwd()) {
+function toolList(raw, key, problems) {
+  const v = raw[key];
+  if (v === void 0) return void 0;
+  if (!Array.isArray(v) || !v.every((x) => typeof x === "string" && x.length > 0)) {
+    problems.push(`\`${key}\` must be an array of tool names`);
+    return void 0;
+  }
+  const known = new Set(TOOL_NAMES);
+  const unknown = v.filter((n) => !known.has(n));
+  if (unknown.length) problems.push(`\`${key}\` names unknown tool(s) ${unknown.join(", ")}`);
+  return new Set(v);
+}
+function loadProjectConfig(cwd = process.cwd(), opts = {}) {
   const configPath = findConfigFile(cwd);
   if (!configPath) {
     return { active: false, reason: `no ${CONFIG_FILE} at or above ${resolve(cwd || process.cwd())}` };
@@ -343,9 +732,12 @@ function loadProjectConfig(cwd = process.cwd()) {
     tuning[key] = v;
   }
   if (!["low", "mid", "high"].includes(tuning.recallBudget)) problems.push("`recallBudget` must be low, mid or high");
-  if (!Number.isInteger(tuning.enrichMaxChars) || tuning.enrichMaxChars < 1) {
-    problems.push("`enrichMaxChars` must be a positive integer");
+  if (!Number.isInteger(tuning.enrichMaxChars) || tuning.enrichMaxChars < 1 || tuning.enrichMaxChars > ENRICH_MAX_CHARS_LIMIT) {
+    problems.push(`\`enrichMaxChars\` must be an integer from 1 to ${ENRICH_MAX_CHARS_LIMIT}`);
   }
+  const allow = toolList(raw, "allowTools", problems);
+  const deny = toolList(raw, "denyTools", problems);
+  const enabledTools = TOOL_NAMES.filter((n) => (!allow || allow.has(n)) && !deny?.has(n));
   const routing = {};
   if (raw.routing !== void 0) {
     if (!raw.routing || typeof raw.routing !== "object" || Array.isArray(raw.routing)) {
@@ -363,7 +755,7 @@ function loadProjectConfig(cwd = process.cwd()) {
     }
   }
   let token = { token: "", source: "none" };
-  if (problems.length === 0) {
+  if (problems.length === 0 && opts.token !== false) {
     try {
       token = readToken(raw, configDir);
     } catch (err) {
@@ -387,15 +779,96 @@ function loadProjectConfig(cwd = process.cwd()) {
       tokenSource: token.source,
       configPath,
       projectRoot: configDir,
-      routing
+      routing,
+      enabledTools
     }
   };
 }
 
+// src/lib/banks.ts
+var BANK_EXISTS_TTL_MS = 5 * 60 * 1e3;
+var BankGate = class {
+  constructor(config, opts = {}) {
+    this.config = config;
+    this.ttlMs = opts.ttlMs ?? BANK_EXISTS_TTL_MS;
+    this.now = opts.now ?? Date.now;
+  }
+  config;
+  /** One client per bank, created on first use. */
+  clients = /* @__PURE__ */ new Map();
+  /**
+   * When each bank was last confirmed to exist. Only positives are cached, and only for `ttlMs`: a
+   * bank an operator deleted must stop being accepted, or the next write would recreate it.
+   */
+  confirmedAt = /* @__PURE__ */ new Map();
+  ttlMs;
+  now;
+  /** A client for the default bank without the existence check — for tools that never touch a bank. */
+  defaultClient() {
+    return this.clientFor(this.config.defaultBank);
+  }
+  clientFor(bank) {
+    let client = this.clients.get(bank);
+    if (!client) {
+      client = new HindsightClient(this.config.url, bank, this.config.apiKey);
+      this.clients.set(bank, client);
+    }
+    return client;
+  }
+  /**
+   * Resolve `requested` (empty → `defaultBank`) to a client, or to a refusal message. May throw on
+   * a network failure while checking existence; callers turn that into an explained error.
+   */
+  async resolve(requested) {
+    const bank = requested === void 0 || requested === null || requested === "" ? this.config.defaultBank : requested;
+    if (typeof bank !== "string") return "Error: bank must be a string";
+    if (!this.config.banks.includes(bank)) {
+      return `Refusing: bank "${bank}" is not in this project's allowlist (${this.config.banks.join(", ")}). Allowed banks are declared in ${this.config.configPath}.`;
+    }
+    const client = this.clientFor(bank);
+    const at = this.confirmedAt.get(bank);
+    if (at === void 0 || this.now() - at >= this.ttlMs) {
+      if (!await client.bankExists(bank)) {
+        this.confirmedAt.delete(bank);
+        return `Refusing: bank "${bank}" does not exist on ${this.config.url}. This server never creates banks \u2014 an operator creates one deliberately, then this call will work.`;
+      }
+      this.confirmedAt.set(bank, this.now());
+    }
+    return client;
+  }
+};
+
+// src/lib/paths.ts
+import { realpathSync as realpathSync2, statSync } from "node:fs";
+import { resolve as resolve2, sep as sep2 } from "node:path";
+var MAX_PROJECT_FILE_BYTES = 2 * 1024 * 1024;
+function assertInsideProject(input, projectRoot) {
+  const root = realpathSync2(resolve2(projectRoot));
+  let real;
+  try {
+    real = realpathSync2(resolve2(input));
+  } catch (err) {
+    throw new Error(`cannot resolve ${input}: ${err.message}`);
+  }
+  if (real !== root && !real.startsWith(root + sep2)) {
+    throw new Error(
+      `refusing to read ${input}: it resolves to ${real}, which is outside the project root ${root}. Symlinks are followed before this check, so a link pointing out of the project is refused too.`
+    );
+  }
+  const size = statSync(real).size;
+  if (size > MAX_PROJECT_FILE_BYTES) {
+    throw new Error(`refusing to read ${real}: ${size} bytes exceeds the ${MAX_PROJECT_FILE_BYTES}-byte cap`);
+  }
+  return real;
+}
+
 // src/lib/enrich.ts
+import { createHash } from "node:crypto";
+var ENRICH_SOURCE_TAG = "source-tool:enrich";
 var ENRICH_KINDS = ["decision", "rejected", "lesson", "pitfall", "rule", "finding"];
 var KINDS = new Set(ENRICH_KINDS);
 var FIELDS = /* @__PURE__ */ new Set(["bank", "kind", "content", "context", "timestamp", "document_id", "tags", "metadata"]);
+var LOOKUP_CONCURRENCY = 8;
 var ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
 var DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 var EXTRA_RULES = [
@@ -521,7 +994,7 @@ function parseCandidates(text, opts) {
       continue;
     }
     const kind = c.kind;
-    const tags = [.../* @__PURE__ */ new Set([...c.tags ?? [], `kind:${kind}`])];
+    const tags = [.../* @__PURE__ */ new Set([...c.tags ?? [], `kind:${kind}`, ENRICH_SOURCE_TAG])];
     const ts = c.timestamp;
     out.candidates.push({
       line,
@@ -542,15 +1015,103 @@ function parseCandidates(text, opts) {
   }
   return out;
 }
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+async function planEnrich(bytes, opts, resolve3) {
+  const parsed = parseCandidates(new TextDecoder().decode(bytes), opts);
+  const byBank = /* @__PURE__ */ new Map();
+  for (const c of parsed.candidates) {
+    const list = byBank.get(c.bank);
+    if (list) list.push(c);
+    else byBank.set(c.bank, [c]);
+  }
+  const refused = [...parsed.refused];
+  const banks = [];
+  for (const [bank, all] of byBank) {
+    const client = await resolve3(bank);
+    if (typeof client === "string") {
+      for (const c of all) refused.push({ line: c.line, documentId: c.item.document_id, reasons: [client] });
+      continue;
+    }
+    const found = await mapLimit(all, LOOKUP_CONCURRENCY, (c) => client.getDocument(c.item.document_id));
+    const candidates = [];
+    const existing = [];
+    const foreign = [];
+    for (const [i, c] of all.entries()) {
+      const doc = found[i];
+      const id = c.item.document_id;
+      if (doc === null) {
+        candidates.push(c);
+        continue;
+      }
+      const ours = Array.isArray(doc.tags) && doc.tags.includes(ENRICH_SOURCE_TAG);
+      if (!ours && !opts.allowReplaceForeign) {
+        const units = typeof doc.memory_unit_count === "number" ? `${doc.memory_unit_count} memory unit(s)` : "its memories";
+        refused.push({
+          line: c.line,
+          documentId: id,
+          reasons: [
+            `document "${id}" already exists in bank "${bank}" and was not written by enrich \u2014 replacing it would delete ${units}. Choose another document_id, or pass allowReplaceForeign if replacing it is intended`
+          ]
+        });
+        continue;
+      }
+      candidates.push(c);
+      existing.push(id);
+      if (!ours) foreign.push(id);
+    }
+    if (candidates.length) banks.push({ bank, client, candidates, existing, foreign });
+  }
+  refused.sort((a, b) => a.line - b.line);
+  const resolved = {
+    v: 1,
+    file: createHash("sha256").update(bytes).digest("hex"),
+    allowReplaceForeign: opts.allowReplaceForeign === true,
+    banks: banks.map((b) => ({
+      bank: b.bank,
+      items: b.candidates.map((c) => c.item.document_id),
+      existing: [...b.existing].sort(),
+      foreign: [...b.foreign].sort()
+    })),
+    refused: refused.map((r) => [r.line, r.documentId ?? null, r.reasons])
+  };
+  const digest = createHash("sha256").update(JSON.stringify(resolved)).digest("hex");
+  return { lines: parsed.lines, refused, banks, digest };
+}
+function confirmRefusal(plan, confirm) {
+  if (typeof confirm !== "string" || !confirm) {
+    return "Refusing to apply: apply requires the digest printed by the dry run of this exact file. Run the dry run, have a human review the report, then apply with that digest. Nothing was written.";
+  }
+  if (confirm.trim().toLowerCase() !== plan.digest) {
+    return "Refusing to apply: the file or the resolved plan changed since the dry run that produced this digest (an edited line, a different routing, or documents created or removed on the server). Dry-run again and review the new report. Nothing was written.";
+  }
+  return null;
+}
 export {
+  BankGate,
+  ENRICH_MAX_CHARS_LIMIT,
+  ENRICH_SOURCE_TAG,
   TOOL_NAMES,
   assertBankId,
+  assertInsideProject,
   assertPathId,
+  confirmRefusal,
   escapeMemoryMarkers,
   findConfigFile,
   isOwnTool,
   loadProjectConfig,
   parseCandidates,
+  planEnrich,
   redact,
   redactDeep,
   redactionCount,

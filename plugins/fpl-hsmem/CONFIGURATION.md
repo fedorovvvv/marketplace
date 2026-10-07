@@ -5,6 +5,30 @@
 > directory, is the whole of it. There is no user-wide config, no bank derived from the directory
 > name, and no way for environment variables to switch the plugin on.
 
+## Where the file is looked for
+
+From the working directory upwards, stopping at the **git toplevel** (a directory with a `.git`
+directory, or a `.git` file in a linked worktree). Outside a repository the walk stops at `$HOME`;
+outside both, only the working directory itself is checked. **`$HOME/.hindsight.json` is never
+read** — a config there would switch the plugin on for every project under the home directory. A
+config above the repository is ignored too: it is not that repository's decision.
+
+## What a config may do with your credentials
+
+A `.hindsight.json` can be committed by whoever controls the repository, and it names both the
+server (`url`) and where the token comes from. So it is not trusted with more than it needs:
+
+- **`tokenFile`** must resolve — symlinks followed — to a file **inside the directory that holds
+  `.hindsight.json`**. An absolute path elsewhere, a `..` escape or a symlink pointing out makes
+  the config invalid. Otherwise a cloned repository could send any file you can read (an SSH key,
+  a cloud credential) to a server of its choosing as the bearer token.
+- **`tokenCommand`** runs only when **you** set `HINDSIGHT_ALLOW_TOKEN_COMMAND=1` in your
+  environment. Without it, a config that names one is invalid (inert, with the reason).
+- **`HINDSIGHT_API_KEY`** is used only together with **`HINDSIGHT_URL`**. Alone it is ignored, so
+  your key never travels to a url that a repository chose.
+- Hooks read the token only after deciding to run (`autoRecall` / `autoRetain`), so a
+  `tokenCommand` never runs on a prompt the hooks would ignore anyway.
+
 ## The rule
 
 | Situation | MCP server | Hooks |
@@ -32,8 +56,8 @@
 | `url` | string | **required** | Hindsight API base URL (`http://` or `https://`). |
 | `banks` | string[] | **required**, non-empty | Allowlist. The only banks any tool may touch. |
 | `defaultBank` | string | **required**, must be in `banks` | Used when a tool call omits `bank`; the only bank the recall hook reads. |
-| `tokenFile` | string | — | File holding the bearer token. Relative paths resolve against the directory containing `.hindsight.json`. Keep it out of git. |
-| `tokenCommand` | string[] | — | argv (run without a shell, 10 s timeout) whose stdout is the token — e.g. `["security", "find-generic-password", "-s", "hindsight", "-w"]`. Used only when `tokenFile` is absent. |
+| `tokenFile` | string | — | File holding the bearer token. Relative paths resolve against the directory containing `.hindsight.json`; the real path must stay inside that directory. Keep it out of git. |
+| `tokenCommand` | string[] | — | argv (run without a shell, 10 s timeout) whose stdout is the token — e.g. `["security", "find-generic-password", "-s", "hindsight", "-w"]`. Used only when `tokenFile` is absent, and only with `HINDSIGHT_ALLOW_TOKEN_COMMAND=1` in your environment. |
 | `autoRecall` | boolean | `false` | Inject recalled memories from `defaultBank` before each prompt. |
 | `autoRetain` | boolean | `false` | Capture the session transcript on Stop / SessionEnd. See below. |
 | `recallBudget` | `low`\|`mid`\|`high` | `mid` | Recall thoroughness. |
@@ -46,7 +70,9 @@
 | `retainEveryNTurns` | number | `10` | Throttle for the Stop hook (only with `autoRetain`). |
 | `retainRoles` / `retainToolCalls` / `retainContext` / `retainTags` | | | Transcript formatting (only with `autoRetain`). |
 | `debug` | boolean | `false` | Log to stderr. |
-| `enrichMaxChars` | number | `900` | Longest `content` a batch-enrichment item may carry. See [Batch enrichment](#batch-enrichment). |
+| `allowTools` | string[] | all | Tool policy: only these tools are listed and callable. See [Tool policy](#tool-policy). |
+| `denyTools` | string[] | — | Tool policy: these tools are never listed and refuse calls. Wins over `allowTools`. |
+| `enrichMaxChars` | number (≤ 2000) | `900` | Longest `content` a batch-enrichment item may carry. See [Batch enrichment](#batch-enrichment). |
 | `routing` | object | `{}` | Repository name or glob → bank, for batch-enrichment items that name no `bank`. Every target must be in `banks`. See [Batch enrichment](#batch-enrichment). |
 
 Refused keys — the config is treated as invalid, never silently reinterpreted: `bankId` (use
@@ -55,7 +81,7 @@ Refused keys — the config is treated as invalid, never silently reinterpreted:
 
 ### Token precedence
 
-`HINDSIGHT_API_KEY` env → `tokenFile` → `tokenCommand` → none. `memory_status` and
+`HINDSIGHT_API_KEY` env (only together with `HINDSIGHT_URL`) → `tokenFile` → `tokenCommand` (only with `HINDSIGHT_ALLOW_TOKEN_COMMAND=1`) → none. `memory_status` and
 `memory_get_current_bank` report *where* the token came from, never the token.
 
 ### Environment variables
@@ -65,11 +91,35 @@ Only these are read, and only for a project that is already configured:
 | Variable | Effect |
 |---|---|
 | `HINDSIGHT_URL` | overrides `url` |
-| `HINDSIGHT_API_KEY` | overrides the token |
+| `HINDSIGHT_API_KEY` | supplies the token — **only when `HINDSIGHT_URL` is set too** |
+| `HINDSIGHT_ALLOW_TOKEN_COMMAND` | `1` lets a config's `tokenCommand` run |
 | `HINDSIGHT_DEBUG` | turns on `debug` |
 | `HINDSIGHT_DISABLED` | turns the plugin off |
 
 `HINDSIGHT_BANK_ID`, `HINDSIGHT_AUTO_RETAIN` and the other upstream variables are ignored.
+
+## Tool policy
+
+`allowTools` / `denyTools` name tools (bare names, e.g. `document_delete`). A tool the policy removes
+is not listed and a direct call is refused as an unknown method — it is not merely described as
+off-limits. An unknown name makes the config invalid, so a typo cannot silently leave a tool on.
+`memory_get_current_bank` reports what is enabled (`"tools": "all"` without a policy).
+
+Hindsight's own per-bank tool allowlist (`mcp_enabled_tools`) applies only to its built-in MCP
+endpoint; this plugin talks REST with the token, so this policy is where the surface is narrowed.
+
+**Recommended read + curate profile** — search, browse and correct memory, write curated items,
+but no deletes, no directives, no mission or bank-config changes, no document ingestion:
+
+```json
+"allowTools": [
+  "memory_recall", "memory_reflect", "memory_status", "memory_get_current_bank",
+  "memory_list", "memory_get", "memory_operations",
+  "mental_model_list", "mental_model_get", "directive_list", "bank_config_get", "document_list",
+  "memory_retain", "memory_retain_batch", "memory_invalidate", "memory_reconsolidate",
+  "mental_model_refresh"
+]
+```
 
 ## Several banks
 
@@ -126,16 +176,28 @@ rest of the file proceeds.
 `update_mode: "replace"` and `observation_scopes: "shared"`, and prints the operation ids. Re-running
 the same file is idempotent: same `document_id`s, replaced in place.
 
+**Apply is bound to the reviewed dry run.** The dry run prints a `digest` — sha256 over the file's
+bytes and the resolved plan (banks, routing, refusals, which documents exist). Apply needs that
+digest (`confirm` on the tool, `--confirm` on the CLI), recomputes it, and refuses on any
+difference: an edited file, a changed routing, or documents created or removed on the server since.
+
+**Apply never replaces a document enrich did not write.** Every item is written with the tag
+`source-tool:enrich`. A `document_id` that already exists without that tag — a captured transcript,
+an ingested document, a manual retain — refuses its line, and the dry run names it. Pass
+`allowReplaceForeign` (`--allow-replace-foreign`) only when replacing it is intended; that changes
+the digest, so dry-run with it too. The tag guards against accidents, not against a writer who sets
+it on purpose.
+
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/dist/enrich.mjs" candidates.jsonl                  # dry run
-node "${CLAUDE_PLUGIN_ROOT}/dist/enrich.mjs" candidates.jsonl --apply          # write
-#   --max-chars N (overrides enrichMaxChars)  --batch-size N (default 20, max 100)
+node "${CLAUDE_PLUGIN_ROOT}/dist/enrich.mjs" candidates.jsonl --apply --confirm <digest>   # write
+#   --allow-replace-foreign  --max-chars N (overrides enrichMaxChars, ≤ 2000)  --batch-size N (default 20, max 100)
 #   --samples N (dry-run samples per bank, default 2)  --json (machine-readable summary)
 ```
 
 Exit codes: `0` every line accepted (and queued, with `--apply`); `3` some lines refused; `1`
-config, file, server or batch failure; `2` usage. The MCP tool additionally requires the file to be
-inside the project root (same rule as `document_ingest_file`); the CLI reads any path you give it.
+config, file, server, confirmation or batch failure; `2` usage. Both entry points require the file
+to be inside the project root, symlinks followed (same rule as `document_ingest_file`).
 
 ## Why `autoRetain` is off by default
 

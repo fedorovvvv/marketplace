@@ -84,15 +84,21 @@ memory_recall  query="what did we decide about <area> in <repo>"
    It validates every line, resolves each item's bank (explicit, else `routing` by
    `metadata.repo`), refuses lines carrying secrets or personal data, and reports counts per bank
    and kind, refused lines with line numbers, which `document_id`s already exist (apply replaces
-   them), and a couple of samples.
+   them), and a couple of samples, plus a `digest` of the file and the plan. A `document_id` that
+   already exists but was not written by enrich (a transcript, an ingested document) refuses its
+   line: pick another id — replacing it would delete its memories.
 6. **Show the human** the summary, the refused lines and 3–5 representative items per bank —
    verbatim, not paraphrased. Fix a refused line by rewording or removing the sensitive part, never
    by weakening the scan. Re-run the dry run until the report is what you mean to write.
 7. **Apply only after the human approves that report** in this conversation:
 
    ```
-   memory_retain_batch  file=<path>.jsonl  apply=true
+   memory_retain_batch  file=<path>.jsonl  apply=true  confirm=<digest from that dry run>
    ```
+
+   Apply recomputes the digest and refuses if the file or the plan changed since the report — then
+   dry-run again and show the new report. `allowReplaceForeign=true` (which changes the digest)
+   only when the human explicitly asked to replace a document enrich did not write.
 
    Items are queued asynchronously, in batches per bank; the report prints operation ids.
 8. **Verify, do not assume.**
@@ -221,7 +227,7 @@ The same pipeline ships as a CLI, reading the same `.hindsight.json` from the wo
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/dist/enrich.mjs" <file>.jsonl            # dry run
-node "${CLAUDE_PLUGIN_ROOT}/dist/enrich.mjs" <file>.jsonl --apply    # write
+node "${CLAUDE_PLUGIN_ROOT}/dist/enrich.mjs" <file>.jsonl --apply --confirm <digest>    # write
 #   --max-chars N   --batch-size N   --samples N   --json
 ```
 
@@ -241,7 +247,10 @@ file, server or batch failure, `2` usage.
 - **Reading records from the local working tree** when the remote base has moved — loading a
   draft that was never accepted, or missing the supersession that landed yesterday.
 - **Applying before a human has seen the dry-run report**, or applying a file edited since the
-  report was shown.
+  report was shown (the digest refuses it — re-run the dry run, do not hunt for the new digest
+  without showing the new report).
+- **Reaching for `allowReplaceForeign` to clear a collision** with a transcript or an ingested
+  document instead of choosing another `document_id`.
 - **Silencing a refusal** by mangling the text until the scanner stops matching, instead of
   removing the secret or the personal data.
 - **Retaining a chat thread or a session transcript raw** — the exact store-of-conversation this

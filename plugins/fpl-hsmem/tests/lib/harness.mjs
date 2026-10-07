@@ -29,9 +29,19 @@ export function finish(name) {
   console.log(`${name} OK: ${pass} cases`);
 }
 
-/** A temp project. `config` (object) is written as .hindsight.json when given. */
-export function project(config, files = {}) {
+/**
+ * An empty home directory for every spawned process. It must not be the project: discovery never
+ * reads `$HOME/.hindsight.json`, so a project that IS the home directory is inert by design.
+ */
+export const HOME = mkdtempSync(join(tmpdir(), "hsmem-home-"));
+
+/**
+ * A temp project. `config` (object) is written as .hindsight.json when given. The directory gets a
+ * `.git` so it is a repository toplevel, like a real project: config discovery stops there.
+ */
+export function project(config, files = {}, { git = true } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "hsmem-test-"));
+  if (git) mkdirSync(join(dir, ".git"));
   if (config) writeFileSync(join(dir, ".hindsight.json"), JSON.stringify(config));
   for (const [rel, content] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, rel)), { recursive: true });
@@ -44,12 +54,18 @@ export function project(config, files = {}) {
  * Fake Hindsight 0.10. `banks` exist; anything else is "missing". The removed 0.10 endpoints
  * answer 410 exactly like the real server, so a regression to them is visible.
  *
- * `opts.documents` — `{ bank: [documentId, …] }` that GET /documents/{id} reports as existing
- * (every other id is a 404, as on the real server). `opts.failRetain` — POST /memories answers 500.
+ * `opts.documents` — `{ bank: [documentId | { id, tags }, …] }` that GET /documents/{id} reports as
+ * existing (every other id is a 404, as on the real server); a bare id has no tags. Documents
+ * written through POST /memories are remembered with their tags, so a re-run sees its own writes.
+ * `opts.failRetain` — POST /memories answers 500. `banks` is read live: a test may mutate it.
  */
 export async function fakeHindsight(banks = [], opts = {}) {
   let ops = 0;
   const requests = [];
+  const docs = new Map();
+  for (const [bank, list] of Object.entries(opts.documents ?? {})) {
+    for (const d of list) docs.set(`${bank}\u0000${typeof d === "string" ? d : d.id}`, typeof d === "string" ? [] : d.tags);
+  }
   const srv = createServer((req, res) => {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -74,13 +90,17 @@ export async function fakeHindsight(banks = [], opts = {}) {
         if (m[2] === "/config") return send(200, { bank_id: bank, config: { memory_defense: null }, overrides: {} });
         if (m[2] === "/memories" && req.method === "POST") {
           if (opts.failRetain) return send(500, { detail: "extraction backend down" });
+          for (const it of JSON.parse(body).items ?? []) {
+            if (it.document_id) docs.set(`${bank}\u0000${it.document_id}`, it.tags ?? []);
+          }
           return send(200, { success: true, bank_id: bank, async: true, operation_id: `op-${++ops}` });
         }
         const doc = /^\/documents\/([^/]+)$/.exec(m[2] ?? "");
         if (doc && req.method === "GET") {
           const id = decodeURIComponent(doc[1]);
-          return (opts.documents?.[bank] ?? []).includes(id)
-            ? send(200, { id, bank_id: bank, memory_unit_count: 1 })
+          const tags = docs.get(`${bank}\u0000${id}`);
+          return tags
+            ? send(200, { id, bank_id: bank, memory_unit_count: 1, tags })
             : send(404, { detail: `document ${id} not found` });
         }
         if (m[2] === "/stats") return send(200, { total_nodes: 0 });
@@ -98,7 +118,7 @@ export async function fakeHindsight(banks = [], opts = {}) {
 export async function withServer(cwd, env, fn) {
   const child = spawn("node", [join(PLUGIN, "dist", "index.mjs")], {
     cwd,
-    env: { PATH: process.env.PATH, HOME: cwd, ...env },
+    env: { PATH: process.env.PATH, HOME, ...env },
     stdio: ["pipe", "pipe", "pipe"],
   });
   let buf = "";
@@ -146,7 +166,7 @@ export function runHook(hook, input, env = {}) {
   return new Promise((resolve) => {
     const child = spawn("node", [join(PLUGIN, "dist", "hooks", hook)], {
       cwd: input.cwd,
-      env: { PATH: process.env.PATH, HOME: input.cwd, ...env },
+      env: { PATH: process.env.PATH, HOME, ...env },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";

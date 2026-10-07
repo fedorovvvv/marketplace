@@ -43,17 +43,23 @@ function resolveTemplate(value: string, vars: Record<string, string>): string {
 
 export async function runRetain(hookInput: HookInput, force = false): Promise<void> {
   const cwd = hookInput.cwd ?? process.cwd();
-  const loaded = loadProjectConfig(cwd);
-  if (!loaded.active) return; // not an opted-in project: the hook does nothing
-  const { config } = loaded;
+  // First without the token: whether this hook runs at all is decided before a token is read.
+  const peek = loadProjectConfig(cwd, { token: false });
+  if (!peek.active) return; // not an opted-in project: the hook does nothing
 
   // Transcript capture is OFF unless the project sets `autoRetain: true`. Memory is for curated
   // facts and decisions, not a store of raw conversation: transcripts carry pasted secrets and
   // noise, and every captured session becomes an extraction job and a document someone must audit.
-  if (!config.autoRetain) {
-    debugLog(config, "autoRetain disabled, skipping");
+  if (!peek.config.autoRetain) {
+    debugLog(peek.config, "autoRetain disabled, skipping");
     return;
   }
+  const loaded = loadProjectConfig(cwd);
+  if (!loaded.active) {
+    process.stderr.write(`[Hindsight] Retain skipped: ${loaded.reason}\n`);
+    return;
+  }
+  const { config } = loaded;
 
   const sessionId = hookInput.session_id ?? "unknown";
   const messages = readTranscript(hookInput.transcript_path);

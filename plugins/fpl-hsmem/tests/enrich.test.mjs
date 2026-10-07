@@ -3,9 +3,9 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { check, finish, project, fakeHindsight, withServer, PLUGIN } from "./lib/harness.mjs";
-import { parseCandidates, routeBank, scanSensitive, loadProjectConfig } from "../dist/testable.mjs";
+import { appendFileSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { check, finish, project, fakeHindsight, withServer, PLUGIN, HOME } from "./lib/harness.mjs";
+import { parseCandidates, routeBank, scanSensitive, loadProjectConfig, ENRICH_SOURCE_TAG } from "../dist/testable.mjs";
 
 const item = (over = {}) => ({
   kind: "decision",
@@ -27,7 +27,7 @@ console.log("validation");
   const it = ok.candidates[0]?.item ?? {};
   check(it.update_mode === "replace" && it.observation_scopes === "shared", "items are written replace + shared");
   check(it.timestamp === "2026-05-06T00:00:00Z", "a bare date becomes a UTC datetime", it.timestamp);
-  check(it.tags?.includes("kind:decision") && it.tags.length === 3, "kind is carried as a tag, once", JSON.stringify(it.tags));
+  check(it.tags?.includes("kind:decision") && it.tags.includes(ENRICH_SOURCE_TAG) && it.tags.length === 4, "kind and the enrich source tag are carried as tags, once", JSON.stringify(it.tags));
   check(!("bank" in it) && !("kind" in it), "bank and kind are not sent as item fields");
 
   const cases = [
@@ -130,6 +130,9 @@ console.log("config");
   check(!badShape.active && /`routing` must be an object/.test(badShape.reason), "routing must be an object");
   const badCap = loadProjectConfig(project({ ...base, enrichMaxChars: 0 }));
   check(!badCap.active && /enrichMaxChars/.test(badCap.reason), "enrichMaxChars must be positive");
+  const overCap = loadProjectConfig(project({ ...base, enrichMaxChars: 2001 }));
+  check(!overCap.active && /enrichMaxChars` must be an integer from 1 to 2000/.test(overCap.reason), "enrichMaxChars is capped at 2000", overCap.reason);
+  check(loadProjectConfig(project({ ...base, enrichMaxChars: 2000 })).active, "enrichMaxChars 2000 is allowed");
 }
 
 /** Run the built CLI in `cwd`. */
@@ -137,7 +140,7 @@ function cli(cwd, args) {
   return new Promise((resolve) => {
     const child = spawn("node", [join(PLUGIN, "dist", "enrich.mjs"), ...args], {
       cwd,
-      env: { PATH: process.env.PATH, HOME: cwd },
+      env: { PATH: process.env.PATH, HOME },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -147,9 +150,14 @@ function cli(cwd, args) {
     child.on("close", (code) => resolve({ code, stdout, stderr }));
   });
 }
+/** The digest a dry run of `args` reports. */
+const digestOf = async (cwd, args) => JSON.parse((await cli(cwd, [...args, "--json"])).stdout).digest;
 
 // alpha, beta exist; "ghost" is allowed but missing on the server; "other" exists but is not allowed.
-const fake = await fakeHindsight(["alpha", "beta", "other"], { documents: { alpha: ["decision:service-x:ADR-007:retries"] } });
+// In alpha, one document was written by enrich earlier and "sess-1234" (a transcript) was not.
+const fake = await fakeHindsight(["alpha", "beta", "other"], {
+  documents: { alpha: [{ id: "decision:service-x:ADR-007:retries", tags: ["kind:decision", ENRICH_SOURCE_TAG] }, "sess-1234"] },
+});
 const config = {
   url: fake.url,
   banks: ["alpha", "beta", "ghost"],
@@ -158,13 +166,14 @@ const config = {
   routing: { "service-*": "alpha", "web-*": "beta" },
 };
 const FILE = jsonl(
-  item(), //                                                                    1 → alpha (routed), exists
+  item(), //                                                                    1 → alpha (routed), exists, written by enrich
   item({ document_id: "rejected:service-x:ADR-007:http-retries", kind: "rejected", content: "Rejected: retries in the HTTP client. Why: non-idempotent calls." }), // 2 → alpha
   item({ document_id: "lesson:web-app:NOTE-1:x", kind: "lesson", metadata: { repo: "web-app" } }), // 3 → beta (routed)
   item({ document_id: "rule:x:1", kind: "rule", bank: "ghost" }), //            4 → refused: bank missing
   item({ document_id: "rule:x:2", kind: "rule", bank: "other" }), //            5 → refused: not allowed
   item({ document_id: "pitfall:x:3", kind: "pitfall", content: "token=ZXlKaGJHY2lPaUpJVXpJMU5pSjk1234 leaked" }), // 6 → secret
   item({ document_id: "finding:x:4", kind: "finding", metadata: { repo: "unknown-repo" } }), // 7 → unroutable
+  item({ document_id: "sess-1234", kind: "lesson", content: "Lesson: a collision with a captured transcript." }), // 8 → refused: foreign document
 );
 const dir = project(config, { t: "tok", "cands.jsonl": FILE });
 const bankScoped = () => fake.requests.filter((r) => r.path.startsWith("/v1/default/banks/"));
@@ -175,27 +184,54 @@ console.log("CLI dry run");
   const r = await cli(dir, ["cands.jsonl"]);
   check(r.code === 3, "exit 3 when some lines are refused", `${r.code} ${r.stderr}`);
   check(posts().length === 0, "dry run writes nothing", JSON.stringify(posts()));
-  check(/DRY RUN — nothing written/.test(r.stdout) && /lines 7 · accepted 3 · refused 4/.test(r.stdout), "summary counts", r.stdout);
+  check(/DRY RUN — nothing written/.test(r.stdout) && /lines 8 · accepted 3 · refused 5/.test(r.stdout), "summary counts", r.stdout);
   check(/bank "alpha": 2 item\(s\) \(decision 1, rejected 1\) · already on the server 1 → would be replaced · new 1/.test(r.stdout), "per bank / kind / existing", r.stdout);
   check(/bank "beta": 1 item\(s\) \(lesson 1\)/.test(r.stdout), "routed to a second bank");
   check(/line 4 \[rule:x:1\]: Refusing: bank "ghost" does not exist/.test(r.stdout), "missing bank refused with its line");
   check(/line 5 \[rule:x:2\]: Refusing: bank "other" is not in this project's allowlist/.test(r.stdout), "bank outside the allowlist refused");
   check(/line 6 \[pitfall:x:3\]: secret\/PII scan: [a-z-]+ in content/.test(r.stdout) && !r.stdout.includes("ZXlKaGJH"), "secret line refused without echoing it", r.stdout);
   check(/line 7 \[finding:x:4\]: no bank/.test(r.stdout), "unroutable line refused");
+  check(/line 8 \[sess-1234\]: document "sess-1234" already exists in bank "alpha" and was not written by enrich — replacing it would delete 1 memory unit/.test(r.stdout), "a document enrich did not write is refused, never replaced", r.stdout);
   check(/alpha {2}decision:service-x:ADR-007:retries/.test(r.stdout), "lists the document_ids already on the server");
-  check(/Apply would send 3 item\(s\) in 2 request\(s\)/.test(r.stdout), "says what apply would do");
+  check(/^digest [0-9a-f]{64}$/m.test(r.stdout), "prints the digest", r.stdout);
+  const digest = /^digest ([0-9a-f]{64})$/m.exec(r.stdout)?.[1];
+  check(new RegExp(`Apply would send 3 item\\(s\\) in 2 request\\(s\\)\\. .*--apply --confirm ${digest}`).test(r.stdout), "says what apply would do and how to confirm it", r.stdout);
   check(!bankScoped().some((q) => q.path.includes("/ghost") || q.path.includes("/other")), "never touches a missing or disallowed bank");
   const docGets = bankScoped().filter((q) => q.method === "GET" && q.path.includes("/documents/"));
   check(docGets.some((q) => q.path.endsWith("/documents/decision%3Aservice-x%3AADR-007%3Aretries")), "existence is an exact GET by encoded id", JSON.stringify(docGets.map((q) => q.path)));
 
   const j = await cli(dir, ["cands.jsonl", "--json"]);
   const s = JSON.parse(j.stdout);
-  check(s.mode === "dry-run" && s.accepted === 3 && s.refused.length === 4 && s.banks[0].kinds.decision === 1, "--json summary", j.stdout.slice(0, 300));
+  check(s.mode === "dry-run" && s.accepted === 3 && s.refused.length === 5 && s.banks[0].kinds.decision === 1 && s.digest === digest, "--json summary carries the same digest", j.stdout.slice(0, 300));
+  check((await digestOf(dir, ["cands.jsonl"])) === digest, "the digest is deterministic");
+
+  const f = await cli(dir, ["cands.jsonl", "--allow-replace-foreign"]);
+  check(/lines 8 · accepted 4 · refused 4/.test(f.stdout) && /alpha {2}sess-1234 {2}\(NOT written by enrich/.test(f.stdout), "--allow-replace-foreign accepts the foreign document and flags it", f.stdout);
+  check(/^digest ([0-9a-f]{64})$/m.exec(f.stdout)?.[1] !== digest, "allowing foreign replacement changes the digest");
+}
+
+console.log("CLI apply needs the dry run's digest");
+{
+  const none = await cli(dir, ["cands.jsonl", "--apply"]);
+  check(none.code === 1 && /requires the digest printed by the dry run/.test(none.stderr) && posts().length === 0, "--apply without --confirm writes nothing", `${none.code} ${none.stderr}`);
+  const wrong = await cli(dir, ["cands.jsonl", "--apply", "--confirm", "0".repeat(64)]);
+  check(wrong.code === 1 && /changed since the dry run/.test(wrong.stderr) && posts().length === 0, "a wrong digest writes nothing", wrong.stderr);
+  const orphan = await cli(dir, ["cands.jsonl", "--confirm", "abc"]);
+  check(orphan.code === 2, "--confirm without --apply is a usage error");
+
+  const edited = project(config, { t: "tok", "c.jsonl": FILE });
+  const before = await digestOf(edited, ["c.jsonl"]);
+  appendFileSync(join(edited, "c.jsonl"), jsonl(item({ bank: "beta", document_id: "decision:late:1" })));
+  const e = await cli(edited, ["c.jsonl", "--apply", "--confirm", before]);
+  check(e.code === 1 && /changed since the dry run/.test(e.stderr) && posts().length === 0, "a file edited after the dry run is refused", e.stderr);
+  const ff = await cli(dir, ["cands.jsonl", "--apply", "--allow-replace-foreign", "--confirm", await digestOf(dir, ["cands.jsonl"])]);
+  check(ff.code === 1 && posts().length === 0, "a digest from a dry run without --allow-replace-foreign does not confirm an apply with it");
 }
 
 console.log("CLI apply");
 {
-  const r = await cli(dir, ["cands.jsonl", "--apply", "--batch-size", "1"]);
+  const digest = await digestOf(dir, ["cands.jsonl"]);
+  const r = await cli(dir, ["cands.jsonl", "--apply", "--confirm", digest, "--batch-size", "1"]);
   check(r.code === 3, "exit 3: applied, but some lines were refused", `${r.code} ${r.stderr}`);
   const p = posts();
   check(p.length === 3, "one request per batch (batch size 1, 3 items)", String(p.length));
@@ -204,33 +240,58 @@ console.log("CLI apply");
   const first = p[0].body.items[0];
   check(
     first.document_id === "decision:service-x:ADR-007:retries" && first.update_mode === "replace" && first.observation_scopes === "shared" &&
-      first.timestamp === "2026-05-06T00:00:00Z" && first.context && first.metadata?.link && first.tags.includes("kind:decision"),
-    "item carries content, context, timestamp, document_id, tags, metadata, replace, shared",
+      first.timestamp === "2026-05-06T00:00:00Z" && first.context && first.metadata?.link && first.tags.includes("kind:decision") && first.tags.includes(ENRICH_SOURCE_TAG),
+    "item carries content, context, timestamp, document_id, tags (+ source tag), metadata, replace, shared",
     JSON.stringify(first),
   );
   const sent = p.flatMap((q) => q.body.items.map((i) => i.document_id));
-  check(!sent.some((id) => ["rule:x:1", "rule:x:2", "pitfall:x:3", "finding:x:4"].includes(id)), "refused lines are never sent", sent.join());
+  check(!sent.some((id) => ["rule:x:1", "rule:x:2", "pitfall:x:3", "finding:x:4", "sess-1234"].includes(id)), "refused lines are never sent, the foreign document is never replaced", sent.join());
   check(/alpha 1\/2: 1 item\(s\) → operation op-\d+/.test(r.stdout) && /Queued\. Extraction is asynchronous/.test(r.stdout), "prints operation ids", r.stdout);
 
-  const again = await cli(dir, ["cands.jsonl", "--apply"]);
+  const stale = await cli(dir, ["cands.jsonl", "--apply", "--confirm", digest]);
+  check(stale.code === 1 && posts().length === 3, "the pre-apply digest no longer confirms: the server now holds those documents");
+  const again = await cli(dir, ["cands.jsonl", "--apply", "--confirm", await digestOf(dir, ["cands.jsonl"])]);
   const p2 = posts().slice(3);
   check(again.code === 3 && p2.length === 2, "default batch size: one request per bank");
-  check(JSON.stringify(p2.flatMap((q) => q.body.items.map((i) => i.document_id)).sort()) === JSON.stringify(sent.sort()), "a re-run writes the same document_ids (idempotent replace)");
+  check(JSON.stringify(p2.flatMap((q) => q.body.items.map((i) => i.document_id)).sort()) === JSON.stringify(sent.sort()), "a re-run replaces its own documents (idempotent)");
+}
+
+console.log("CLI apply replacing a foreign document, deliberately");
+{
+  const f2 = await fakeHindsight(["alpha"], { documents: { alpha: ["sess-9"] } });
+  const fdir = project({ ...config, url: f2.url, banks: ["alpha"], routing: {} }, { t: "tok", "c.jsonl": jsonl(item({ bank: "alpha", document_id: "sess-9" })) });
+  const plain = await cli(fdir, ["c.jsonl"]);
+  check(plain.code === 3 && /not written by enrich/.test(plain.stdout), "refused by default");
+  const digest = await digestOf(fdir, ["c.jsonl", "--allow-replace-foreign"]);
+  const r = await cli(fdir, ["c.jsonl", "--apply", "--allow-replace-foreign", "--confirm", digest]);
+  const w = f2.requests.filter((q) => q.method === "POST");
+  check(r.code === 0 && w.length === 1 && w[0].body.items[0].document_id === "sess-9", "replaced with --allow-replace-foreign and its own digest", `${r.code} ${r.stdout} ${r.stderr}`);
+  f2.close();
 }
 
 console.log("CLI edges");
 {
   const clean = project(config, { t: "tok", "c.jsonl": jsonl(item({ bank: "beta", document_id: "decision:clean:1" })) });
-  const r = await cli(clean, ["c.jsonl", "--apply"]);
+  const r = await cli(clean, ["c.jsonl", "--apply", "--confirm", await digestOf(clean, ["c.jsonl"])]);
   check(r.code === 0, "exit 0 when every line was accepted and queued", `${r.code} ${r.stdout}`);
   const over = await cli(clean, ["c.jsonl", "--max-chars", "10"]);
   check(over.code === 3 && /over the 10-char cap/.test(over.stdout), "--max-chars overrides the config cap");
+  const huge = await cli(clean, ["c.jsonl", "--max-chars", "2001"]);
+  check(huge.code === 2 && /--max-chars must be 1\.\.2000/.test(huge.stderr), "--max-chars cannot exceed 2000", huge.stderr);
 
   const failing = await fakeHindsight(["beta"], { failRetain: true });
   const fdir = project({ ...config, url: failing.url }, { t: "tok", "c.jsonl": jsonl(item({ bank: "beta", document_id: "decision:clean:1" })) });
-  const f = await cli(fdir, ["c.jsonl", "--apply"]);
+  const f = await cli(fdir, ["c.jsonl", "--apply", "--confirm", await digestOf(fdir, ["c.jsonl"])]);
   check(f.code === 1 && /beta 1\/1: 1 item\(s\) → FAILED/.test(f.stdout), "a failed batch is reported and exits 1", f.stdout);
   failing.close();
+
+  const outside = mkdtempSync(join(tmpdir(), "hsmem-out-"));
+  writeFileSync(join(outside, "c.jsonl"), jsonl(item({ bank: "beta" })));
+  const o = await cli(clean, [join(outside, "c.jsonl")]);
+  check(o.code === 1 && /outside the project root/.test(o.stderr), "a file outside the project is refused", o.stderr);
+  symlinkSync(join(outside, "c.jsonl"), join(clean, "link.jsonl"));
+  const l = await cli(clean, ["link.jsonl"]);
+  check(l.code === 1 && /outside the project root/.test(l.stderr), "a symlink pointing out of the project is refused", l.stderr);
 
   const bare = mkdtempSync(join(tmpdir(), "hsmem-noconf-"));
   writeFileSync(join(bare, "c.jsonl"), jsonl(item({ bank: "beta" })));
@@ -245,18 +306,27 @@ console.log("MCP tool");
   const before = posts().length;
   await withServer(dir, {}, async ({ list, call }) => {
     const t = (await list()).find((x) => x.name === "memory_retain_batch");
-    check(Boolean(t) && !t.inputSchema.properties.bank && t.inputSchema.required.join() === "file", "memory_retain_batch is listed, takes file (+apply), no `bank`");
+    const props = t?.inputSchema.properties ?? {};
+    check(Boolean(t) && !props.bank && props.confirm && props.allowReplaceForeign && t.inputSchema.required.join() === "file", "memory_retain_batch is listed: file (+apply, confirm, allowReplaceForeign), no `bank`");
     let r = await call("memory_retain_batch", { file: "cands.jsonl" });
     check(!r.isError && /DRY RUN/.test(r.text) && posts().length === before, "dry run by default, nothing written", r.text);
-    check(/apply:true only after they approve/.test(r.text), "tells the agent to get approval first");
+    const digest = /^digest ([0-9a-f]{64})$/m.exec(r.text)?.[1];
+    check(Boolean(digest) && r.text.includes(`only after they approve, call again with apply:true, confirm:"${digest}"`), "tells the agent to get approval and how to confirm", r.text);
     r = await call("memory_retain_batch", { file: "cands.jsonl", apply: true });
-    check(!r.isError && /APPLY/.test(r.text) && posts().length === before + 2, "apply:true writes", r.text);
+    check(/Refusing to apply: apply requires the digest/.test(r.text) && posts().length === before, "apply:true without confirm writes nothing", r.text);
+    r = await call("memory_retain_batch", { file: "cands.jsonl", apply: true, confirm: "f".repeat(64) });
+    check(/changed since the dry run/.test(r.text) && posts().length === before, "apply:true with a wrong digest writes nothing", r.text);
+    r = await call("memory_retain_batch", { file: "cands.jsonl", apply: true, confirm: digest });
+    check(!r.isError && /APPLY/.test(r.text) && posts().length === before + 2, "apply:true with the digest writes", r.text);
+    const sent = posts().slice(before).flatMap((q) => q.body.items.map((i) => i.document_id));
+    check(!sent.includes("sess-1234"), "the foreign document is not replaced through the tool either");
     const outside = mkdtempSync(join(tmpdir(), "hsmem-out-"));
     writeFileSync(join(outside, "c.jsonl"), jsonl(item({ bank: "alpha" })));
-    r = await call("memory_retain_batch", { file: join(outside, "c.jsonl"), apply: true });
+    r = await call("memory_retain_batch", { file: join(outside, "c.jsonl"), apply: true, confirm: digest });
     check(/outside the project root/.test(r.text) && posts().length === before + 2, "a file outside the project is refused", r.text);
   });
 }
 
 fake.close();
 finish("enrich");
+

@@ -6,6 +6,28 @@ All notable changes to `fpl-hsmem` are documented here. Format:
 
 ## [Unreleased]
 
+### Changed
+- **Batch apply is bound to the reviewed dry run.** `memory_retain_batch` / `enrich.mjs` print a
+  `digest` (sha256 of the file bytes and the resolved plan). Apply requires it (`confirm` /
+  `--confirm`) and refuses when the file, routing or the server's documents changed since.
+- **Batch apply never replaces a document it did not write.** Items carry the tag
+  `source-tool:enrich`; an existing document without it refuses its line unless
+  `allowReplaceForeign` / `--allow-replace-foreign` is set (which changes the digest).
+- **Config trust.** `tokenFile` must resolve (realpath) inside the directory holding
+  `.hindsight.json`; `tokenCommand` runs only with `HINDSIGHT_ALLOW_TOKEN_COMMAND=1`;
+  `HINDSIGHT_API_KEY` is used only together with `HINDSIGHT_URL`; discovery stops at the git
+  toplevel (else `$HOME`) and never reads `$HOME/.hindsight.json`. Hooks read the token only after
+  deciding to run.
+- The autoRecall hook goes through the bank existence gate (`BankGate`), like every MCP tool.
+- Bank existence is cached for 5 minutes instead of the life of the process.
+- The enrich CLI enforces the inside-the-project rule (symlinks followed) and caps `--max-chars`
+  at 2000; `enrichMaxChars` is capped at 2000 too.
+
+### Added
+- Tool policy: optional `allowTools` / `denyTools` in `.hindsight.json`. Denied tools are not listed
+  and refuse calls; unknown names invalidate the config. `memory_get_current_bank` reports the
+  enabled tools.
+
 ## [3.7.0] — 2026-10-07
 
 ### Added

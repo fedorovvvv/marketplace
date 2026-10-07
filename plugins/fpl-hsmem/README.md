@@ -111,18 +111,20 @@ lesson, a pitfall, a rule) that link back to the artifact, writes them as JSONL,
 
 DRY RUN — nothing written — /…/.memory/candidates/service-x.jsonl
 lines 42 · accepted 41 · refused 1
+digest 3f9c…(64 hex)
 
 bank "team": 41 item(s) (decision 20, rejected 11, lesson 6, pitfall 4) · already on the server 0 → would be replaced · new 41
 
 refused (1) — never sent:
   line 17 [lesson:service-x:PROB-3:retry-storm]: secret/PII scan: email in content
 
-Apply would send 41 item(s) in 3 request(s). Show this to a human; call again with apply:true only after they approve.
+Apply would send 41 item(s) in 3 request(s). Show this to a human; only after they approve, call again with apply:true, confirm:"<digest>".
 ```
 
 Each line names its `bank`, or is routed by `metadata.repo` through the project's `routing` map
 (CONFIGURATION.md). Writes replace by `document_id`, so a re-run is idempotent. The same pipeline
-runs from a shell: `node dist/enrich.mjs <file> [--apply]`.
+runs from a shell: `node dist/enrich.mjs <file> [--apply --confirm <digest>]`. Apply is bound to the
+reviewed dry run by its digest and never replaces a document enrich did not write.
 
 ## What's Included
 
