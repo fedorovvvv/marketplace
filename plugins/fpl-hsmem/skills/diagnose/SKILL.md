@@ -51,8 +51,10 @@ curl -fsS http://localhost:8888/health
 - Call `memory_get_current_bank`
 - Compare with what the user expects (ask if unsure)
 - ✓ matches → resolution working
-- ✗ unexpected → check `.mcp.json` env, or project name derivation
-  (`git rev-parse --git-common-dir` in the project)
+- ✗ unexpected → check `config_file` in the output: it is the nearest
+  `.hindsight.json` at or above the working directory, and its `defaultBank`
+  / `banks` decide everything. No tools at all → there is no valid
+  `.hindsight.json`; the server's instructions say why.
 
 ## Step 3 — Bank content
 
@@ -81,13 +83,11 @@ Look for:
 
 ## Step 5 — Config resolution
 
-Read in order, report which one provides each value:
-- `~/.hindsight/config.json`
-- `<cwd>/.mcp.json` → `mcpServers.hindsight.env`
-- `<cwd>/.hindsight.json`
-- Environment variables (`HINDSIGHT_*`)
-
-Show the user the final resolved bankId and URL with their source.
+There is one source: the nearest `.hindsight.json` at or above cwd (see
+CONFIGURATION.md). Only `HINDSIGHT_URL` / `HINDSIGHT_API_KEY` may override its
+url and token, and only once it exists. Show the user `config_file`,
+`default_bank`, `allowed_banks`, `url` and `token_source` from
+`memory_get_current_bank` — never the token itself.
 
 ## Step 6 — Opt-out check
 

@@ -99,6 +99,20 @@ export function redactionCount(text: string): number {
 }
 
 /**
+ * The kinds of credential shape present in `text`, without masking. The batch writer refuses a
+ * candidate on any hit; it reports the kind, never the matched value.
+ */
+export function secretKinds(text: string): string[] {
+  if (typeof text !== "string" || text.length === 0) return [];
+  if (text.length > MAX_SCAN) return ["unscannable-length"];
+  const kinds = new Set<string>();
+  for (const rule of RULES) {
+    if (new RegExp(rule.re.source, rule.re.flags.replace("g", "")).test(text)) kinds.add(rule.kind);
+  }
+  return [...kinds];
+}
+
+/**
  * Redact every string in a structure, in place of `JSON.stringify` on raw API output.
  *
  * Depth-limited on purpose: a cyclic or pathologically nested object must not hang the server, and

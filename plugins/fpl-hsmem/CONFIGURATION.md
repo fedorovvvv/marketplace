@@ -1,267 +1,171 @@
 # Configuration
 
-Full reference for every setting, env var, and resolution rule in
-`fpl-hsmem`. If you just want it to work, [`GETTING-STARTED.md`](./GETTING-STARTED.md)
-covers the happy path with zero configuration.
+> **Note.** Since 3.7.0 configuration
+> is **project-only and opt-in**: one `.hindsight.json`, found by walking up from the working
+> directory, is the whole of it. There is no user-wide config, no bank derived from the directory
+> name, and no way for environment variables to switch the plugin on.
 
----
+## The rule
 
-## Resolution order
+| Situation | MCP server | Hooks |
+|---|---|---|
+| No `.hindsight.json` at or above cwd | answers the handshake, lists **no tools**; its instructions say why | no-op, no network |
+| `.hindsight.json` present but invalid | same as above; the reason (e.g. `defaultBank "x" is not in banks`) is on stderr and in the instructions | no-op |
+| `.hindsight-disabled` next to it, or `HINDSIGHT_DISABLED=true` | inert | no-op |
+| Valid `.hindsight.json` | all 28 tools | recall only if `autoRecall: true`; retain only if `autoRetain: true` |
 
-Config is built up from five sources, later sources override earlier:
-
-1. **Built-in defaults** (`src/lib/config.ts`)
-2. **`~/.hindsight/config.json`** — user-wide overrides
-3. **`<cwd>/.mcp.json`** → `mcpServers.hindsight.env` — project-level
-   single source of truth for the bank
-4. **`<cwd>/.hindsight.json`** — project-level override file
-5. **Environment variables** — highest priority, override everything
-
-If `bankId` is still unset after all five sources, it is derived from
-`resolveProjectName(cwd)` — git-worktree-aware project name.
-
----
-
-## Environment variables
-
-### Core
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HINDSIGHT_URL` | `http://localhost:8888` | Hindsight server URL |
-| `HINDSIGHT_BANK_ID` | derived from cwd | Memory bank ID (isolation key) |
-| `HINDSIGHT_API_KEY` | `""` | Bearer token for the Hindsight API (only needed for hosted instances) |
-| `HINDSIGHT_DISABLED` | `false` | Disable both MCP and hooks for this project (alternative: `.hindsight-disabled` marker file) |
-| `HINDSIGHT_DEBUG` | `false` | Emit `[Hindsight]` lines to stderr — useful for diagnosing hook behavior |
-
-### Auto-recall hook
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HINDSIGHT_AUTO_RECALL` | `true` | Master switch for the UserPromptSubmit hook |
-| `HINDSIGHT_RECALL_BUDGET` | `mid` | `low` (fast, fewer strategies) / `mid` (balanced) / `high` (thorough, slower) |
-| `HINDSIGHT_RECALL_MAX_TOKENS` | `1024` | Token budget for recalled memory block |
-| `HINDSIGHT_RECALL_TYPES` | `["world","experience"]` | Which memory types to retrieve. JSON array. Available: `world`, `experience`, `observation` |
-| `HINDSIGHT_RECALL_CONTEXT_TURNS` | `1` | Number of prior conversation turns included in recall query. `1` = only current prompt |
-| `HINDSIGHT_RECALL_MAX_QUERY_CHARS` | `800` | Max length of the recall query string |
-
-### Auto-retain hook
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HINDSIGHT_AUTO_RETAIN` | `true` | Master switch for the Stop hook |
-| `HINDSIGHT_RETAIN_EVERY_N_TURNS` | `10` | Throttling — retain only every Nth turn. `1` = every turn |
-| `HINDSIGHT_RETAIN_OVERLAP_TURNS` | `2` | When chunked retention fires, extra turns from prior chunk for continuity |
-| `HINDSIGHT_RETAIN_TOOL_CALLS` | `false` | Include `tool_use` blocks in retained transcript |
-| `HINDSIGHT_RETAIN_CONTEXT` | `claude-code` | Label attached to retained memories — useful when multiple integrations write to the same bank |
-
-### Bank persona
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HINDSIGHT_BANK_MISSION` | `""` | One-sentence mission attached to the bank — affects how Hindsight phrases recall/reflect answers |
-| `HINDSIGHT_RETAIN_MISSION` | `""` | Custom instructions for the fact-extraction LLM — `"Focus on technical decisions and explicit user preferences."` |
-
----
-
-## File-based config
-
-### `~/.hindsight/config.json` (user-wide)
+## `.hindsight.json`
 
 ```json
 {
-  "url": "http://localhost:8888",
-  "recallBudget": "high",
-  "debug": true
+  "url": "http://hindsight.example.internal:8888",
+  "banks": ["team", "analytics"],
+  "defaultBank": "team",
+  "tokenFile": ".secrets/hindsight.token",
+  "autoRecall": false,
+  "autoRetain": false
 }
 ```
 
-Applies to all projects unless overridden by project-level config.
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `url` | string | **required** | Hindsight API base URL (`http://` or `https://`). |
+| `banks` | string[] | **required**, non-empty | Allowlist. The only banks any tool may touch. |
+| `defaultBank` | string | **required**, must be in `banks` | Used when a tool call omits `bank`; the only bank the recall hook reads. |
+| `tokenFile` | string | — | File holding the bearer token. Relative paths resolve against the directory containing `.hindsight.json`. Keep it out of git. |
+| `tokenCommand` | string[] | — | argv (run without a shell, 10 s timeout) whose stdout is the token — e.g. `["security", "find-generic-password", "-s", "hindsight", "-w"]`. Used only when `tokenFile` is absent. |
+| `autoRecall` | boolean | `false` | Inject recalled memories from `defaultBank` before each prompt. |
+| `autoRetain` | boolean | `false` | Capture the session transcript on Stop / SessionEnd. See below. |
+| `recallBudget` | `low`\|`mid`\|`high` | `mid` | Recall thoroughness. |
+| `recallMaxTokens` | number | `1024` | Recall token budget. |
+| `recallTypes` | string[] | `["world","experience"]` | Fact types the hook recalls. |
+| `recallContextTurns` | number | `1` | Prior turns folded into the hook's query. |
+| `recallMaxQueryChars` | number | `800` | Query length cap. |
+| `recallRoles` | string[] | `["user","assistant"]` | Roles used when composing the query. |
+| `recallPromptPreamble` | string | (built in) | Text above injected memories. |
+| `retainEveryNTurns` | number | `10` | Throttle for the Stop hook (only with `autoRetain`). |
+| `retainRoles` / `retainToolCalls` / `retainContext` / `retainTags` | | | Transcript formatting (only with `autoRetain`). |
+| `debug` | boolean | `false` | Log to stderr. |
+| `enrichMaxChars` | number | `900` | Longest `content` a batch-enrichment item may carry. See [Batch enrichment](#batch-enrichment). |
+| `routing` | object | `{}` | Repository name or glob → bank, for batch-enrichment items that name no `bank`. Every target must be in `banks`. See [Batch enrichment](#batch-enrichment). |
 
-### `<cwd>/.mcp.json` (project-level, source of truth for bank)
+Refused keys — the config is treated as invalid, never silently reinterpreted: `bankId` (use
+`banks` + `defaultBank`), `apiKey` (never store the token in the config; use `tokenFile` /
+`tokenCommand`), `bankMission`, `retainMission`, `enabled`.
+
+### Token precedence
+
+`HINDSIGHT_API_KEY` env → `tokenFile` → `tokenCommand` → none. `memory_status` and
+`memory_get_current_bank` report *where* the token came from, never the token.
+
+### Environment variables
+
+Only these are read, and only for a project that is already configured:
+
+| Variable | Effect |
+|---|---|
+| `HINDSIGHT_URL` | overrides `url` |
+| `HINDSIGHT_API_KEY` | overrides the token |
+| `HINDSIGHT_DEBUG` | turns on `debug` |
+| `HINDSIGHT_DISABLED` | turns the plugin off |
+
+`HINDSIGHT_BANK_ID`, `HINDSIGHT_AUTO_RETAIN` and the other upstream variables are ignored.
+
+## Several banks
+
+Every tool except `memory_get_current_bank` and `memory_retain_batch` takes an optional `bank`.
+Omitted, it is `defaultBank`. A call is refused **before any bank-scoped request** when the bank is
+not in `banks`, or when the server does not have it — existence is read from
+`GET /v1/default/banks`, because Hindsight creates a bank implicitly on the first retain or reflect.
+This plugin never creates a bank; an operator does, deliberately. There is no cross-bank search: ask
+each bank separately.
+
+## Batch enrichment
+
+`memory_retain_batch` (MCP) and `dist/enrich.mjs` (CLI) write a JSONL file of distilled candidate
+items — one short, self-contained item per line — into memory. The procedure for producing that
+file is the `/fpl-hsmem:enrich` skill. Both entry points read this same `.hindsight.json`.
 
 ```json
 {
-  "mcpServers": {
-    "hindsight": {
-      "command": "node",
-      "args": ["/path/to/fpl-hsmem/dist/index.mjs"],
-      "env": {
-        "HINDSIGHT_URL": "http://localhost:8888",
-        "HINDSIGHT_BANK_ID": "billing-service"
-      }
-    }
+  "url": "http://hindsight.example.internal:8888",
+  "banks": ["team", "payments", "platform"],
+  "defaultBank": "team",
+  "tokenFile": ".secrets/hindsight.token",
+  "enrichMaxChars": 900,
+  "routing": {
+    "billing-service": "payments",
+    "billing-*": "payments",
+    "infra-*": "platform",
+    "*": "team"
   }
 }
 ```
 
-The plugin **reads `mcpServers.hindsight.env`** to pick up `HINDSIGHT_*`
-values, even when run via the plugin (not Mode 2 setup CLI). This means
-your project's `.mcp.json` is always the canonical bank declaration.
+**Bank per item.** An item's explicit `bank` wins. Otherwise its `metadata.repo` is looked up in
+`routing`: an exact key first, then the first glob (`*` any run, `?` one character) in declaration
+order. No match → the line is refused; it is **never** sent to `defaultBank` by default, because a
+wrong bank is a silent split of the team's memory. Add `"*": "<bank>"` if you want a catch-all.
+A route to a bank outside `banks` makes the whole config invalid, so the mistake is reported where
+it was made. Every resolved bank must also exist on the server; nothing is created.
 
-### `<cwd>/.hindsight.json` (project-level overrides)
+**Line schema.** `kind` (`decision`|`rejected`|`lesson`|`pitfall`|`rule`|`finding`), `content`
+(≤ `enrichMaxChars`), `context`, `timestamp` (ISO date or datetime — when it was decided),
+`document_id` (letters, digits, `. _ ~ : -`; unique within the file), optional `tags` (strings),
+`metadata` (string values), `bank`. Any other field refuses the line — it is usually a typo.
 
-```json
-{
-  "recallBudget": "low",
-  "retainEveryNTurns": 5,
-  "retainTags": ["{session_id}", "billing"]
-}
-```
+**Refused, never sent.** A line that fails validation, cannot be routed, names a disallowed or
+missing bank, or carries a credential or personal-data shape (private key, bearer token, JWT,
+known token prefixes, `password=`, credentials in a URL, database DSNs, long opaque tokens, email
+addresses) is listed with its line number and the reason — the matched text is never echoed. The
+rest of the file proceeds.
 
-Useful for project-specific tuning without modifying `.mcp.json` (which
-many tools regenerate).
-
-### `.claude/settings.local.json` (Mode 2 only)
-
-Created by `setup.mjs`. Registers the 3 hooks for this project.
-Hook-specific env vars can be set per hook:
-
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [{
-      "hooks": [{
-        "type": "command",
-        "command": "node /path/to/fpl-hsmem/dist/hooks/recall.mjs",
-        "timeout": 12,
-        "env": {
-          "HINDSIGHT_RECALL_BUDGET": "high"
-        }
-      }]
-    }]
-  }
-}
-```
-
----
-
-## Bank ID resolution
-
-`bankId` is derived in this order:
-
-1. Explicit value from any config source (env, `.mcp.json`, `.hindsight.json`)
-2. **Git worktree resolution** — `git rev-parse --git-common-dir`,
-   then basename of the parent. All worktrees of a repo share one bank.
-3. **Plain directory basename** if cwd is not a git repo
-
-### Worktree behavior
-
-Suppose:
-- Main checkout: `/Users/me/Work/myproject`
-- Worktree: `/Users/me/Work/myproject-wt1`
-
-Both resolve to `bankId = "myproject"`. Memory does not fragment across
-short-lived branches. To override and use the literal directory basename
-instead, pin `HINDSIGHT_BANK_ID` in that project's `.mcp.json`.
-
-### Monorepo workflows
-
-Default behavior — one bank per repo, no matter how deep you `cd`.
-Useful when team context is shared. If you want per-package isolation,
-pin `HINDSIGHT_BANK_ID` per subdirectory via a nested `.mcp.json`.
-
----
-
-## Three modes — detailed config
-
-### Mode 1 — Plugin install
+**Dry run is the default.** It reports counts per bank and kind, the refused lines, which
+`document_id`s already exist on the server (apply would replace them), and samples. Apply posts
+`/v1/default/banks/{bank}/memories` in batches per bank, `async: true`, each item with
+`update_mode: "replace"` and `observation_scopes: "shared"`, and prints the operation ids. Re-running
+the same file is idempotent: same `document_id`s, replaced in place.
 
 ```bash
-/plugin install fpl-hsmem@ForgePlan-marketplace
+node "${CLAUDE_PLUGIN_ROOT}/dist/enrich.mjs" candidates.jsonl                  # dry run
+node "${CLAUDE_PLUGIN_ROOT}/dist/enrich.mjs" candidates.jsonl --apply          # write
+#   --max-chars N (overrides enrichMaxChars)  --batch-size N (default 20, max 100)
+#   --samples N (dry-run samples per bank, default 2)  --json (machine-readable summary)
 ```
 
-- MCP server registered via plugin's `.mcp.json`
-  (`${CLAUDE_PLUGIN_ROOT}/dist/index.mjs`)
-- 3 hooks registered via plugin's `hooks/hooks.json`
-- 5 skills available as `/fpl-hsmem:<skill>`
-- Bank ID — derived from cwd (no config needed)
-- Configuration overrides — only via env vars or `~/.hindsight/config.json`
+Exit codes: `0` every line accepted (and queued, with `--apply`); `3` some lines refused; `1`
+config, file, server or batch failure; `2` usage. The MCP tool additionally requires the file to be
+inside the project root (same rule as `document_ingest_file`); the CLI reads any path you give it.
 
-Good for: default-on across all projects with zero per-project setup.
+## Why `autoRetain` is off by default
 
-### Mode 2 — Setup CLI
+Before 3.7.0 the whole conversation was captured after every response. Since 3.7.0 the plugin keeps the Stop and
+SessionEnd hooks registered but makes them do nothing unless `autoRetain: true`:
+
+- memory is meant for curated facts and decisions, not a store of raw conversation;
+- transcripts carry whatever was pasted into a session — credentials included — and server-side
+  masking applies to future writes only;
+- every captured session becomes an extraction job and a document someone has to audit.
+
+Write deliberately with `memory_retain` (or `document_ingest` for a real document) instead. Even
+with `autoRetain: true`, a retain into a bank the server does not have is skipped.
+
+## Scaffolding
 
 ```bash
-cd ~/Work/my-project
-node ~/Work/forgeplan-marketplace/plugins/fpl-hsmem/dist/setup.mjs
+node "${CLAUDE_PLUGIN_ROOT}/dist/setup.mjs" --url http://hindsight.example.internal:8888 \
+  --bank team --bank analytics --token-file .secrets/hindsight.token
 ```
 
-Generates 3 files in the project:
+Writes `.hindsight.json` (first `--bank` is the default) and `.claude/rules/hindsight.md`. The
+plugin registers the MCP server and hooks itself; no `.mcp.json` is written.
 
-| File | Purpose |
-|------|---------|
-| `.mcp.json` | MCP server registration with explicit `HINDSIGHT_BANK_ID` |
-| `.claude/settings.local.json` | The 3 hooks (gitignored by default, or `--committed` for shared) |
-| `.claude/rules/hindsight.md` | Project-level usage discipline reminder |
+## Hindsight server compatibility
 
-CLI options:
-
-| Flag | Default | What |
-|------|---------|------|
-| `--bank <id>` | derived | Pin specific bank ID |
-| `--url <url>` | `http://localhost:8888` | Hindsight URL |
-| `--committed` | `false` | Write to `.claude/settings.json` instead of `.local` |
-| `--no-hooks` | `false` | Only `.mcp.json`, skip hook registration |
-| `--no-rules` | `false` | Skip writing `.claude/rules/hindsight.md` |
-| `--force` | `false` | Overwrite existing files |
-
-Good for: explicit, committed, team-visible configuration of a single
-project.
-
-### Mode 3 — Direct MCP
-
-Edit project's `.mcp.json` manually:
-
-```json
-{
-  "mcpServers": {
-    "hindsight": {
-      "command": "node",
-      "args": ["/Users/me/Work/forgeplan-marketplace/plugins/fpl-hsmem/dist/index.mjs"],
-      "env": {
-        "HINDSIGHT_URL": "http://localhost:8888",
-        "HINDSIGHT_BANK_ID": "experiment-2026-05"
-      }
-    }
-  }
-}
-```
-
-No hooks, no skills — just the 13 MCP tools. Bundle is standalone:
-`dist/index.mjs` has no `node_modules` dependency at runtime (esbuild
-bundled @modelcontextprotocol/sdk).
-
-Good for: ephemeral / experimental use where you don't want background
-hooks; or for non-Claude-Code clients that speak MCP.
-
----
-
-## Opt-out
-
-To disable Hindsight in a specific project even when the plugin is
-installed:
-
-```bash
-# In the project root
-touch .hindsight-disabled
-```
-
-Or via env (e.g. in `.claude/settings.local.json`):
-
-```json
-{
-  "env": { "HINDSIGHT_DISABLED": "true" }
-}
-```
-
-What this does:
-- MCP server exits at startup → tools don't appear
-- `recall.mjs` hook exits with `autoRecall = false` after detecting opt-out
-- `retain.mjs` and `session-end.mjs` exit silently — nothing is written
-
-Mode 2 / Mode 3 — just don't add the entries to `.mcp.json` /
-`.claude/settings.json`. Opt-out flags are for the plugin mode.
+Targets Hindsight **0.10.x** (verified against 0.10.2). Nothing calls the endpoints 0.10 removed
+(`GET/PUT /banks/{id}/profile`, `POST /banks/{id}/background` → 410). The bank persona is
+`reflect_mission`, set with `memory_set_mission` via `PATCH /banks/{id}/config`.
+`tests/test-hindsight-010.sh` pins this.
 
 ---
 
@@ -302,61 +206,29 @@ instead — `${CLAUDE_PLUGIN_DATA}/state/`.
 
 ---
 
+---
+
 ## Common configuration recipes
 
 ### Faster recall, less context bloat
 
-```bash
-HINDSIGHT_RECALL_BUDGET=low
-HINDSIGHT_RECALL_MAX_TOKENS=512
-```
-
-### Retain every single turn (debugging)
-
-```bash
-HINDSIGHT_RETAIN_EVERY_N_TURNS=1
-```
-
-### Domain-tagged retains
-
-In `.hindsight.json`:
-
 ```json
-{
-  "retainTags": ["{session_id}", "billing-service"],
-  "retainContext": "billing"
-}
+{ "autoRecall": true, "recallBudget": "low", "recallMaxTokens": 512 }
 ```
 
-### Custom bank persona for a backend service
+### Domain-tagged manual retains
 
-```bash
-HINDSIGHT_BANK_MISSION="TypeScript billing API — focus on data model changes, payment provider decisions, and currency / locale edge cases."
-HINDSIGHT_RETAIN_MISSION="Extract billing-specific technical decisions, ignore generic refactoring discussions."
-```
+Pass `tags` to `memory_retain`; with `autoRetain: true`, `retainTags` / `retainContext` tag the
+captured transcript.
 
-### Per-project recall budget without modifying env
+### Bank persona
 
-In `.hindsight.json`:
-
-```json
-{
-  "recallBudget": "high",
-  "recallMaxTokens": 2048
-}
-```
+Call `memory_set_mission` (optionally with `bank`). Extraction rules (`retain_mission`) are an
+operator setting on the server and deliberately not reachable from a tool.
 
 ---
 
 ## Verification
 
-After any config change, restart Claude Code and run:
-
-```
-/fpl-hsmem:status
-/fpl-hsmem:diagnose
-```
-
-`/fpl-hsmem:diagnose` walks all five resolution layers and shows which
-source provided each value. Use it whenever bank ID or behavior doesn't
-match expectations.
+After any config change, restart Claude Code and run `memory_get_current_bank`, then
+`/fpl-hsmem:status`.

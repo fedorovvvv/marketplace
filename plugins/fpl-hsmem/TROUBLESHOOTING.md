@@ -1,5 +1,12 @@
 # Troubleshooting
 
+> [!IMPORTANT]
+> **Project-only configuration.** Configuration is project-only (`.hindsight.json`, several banks, no
+> derived bank, `autoRetain`/`autoRecall` off by default). Where this page mentions `.mcp.json`,
+> `HINDSIGHT_BANK_ID`, `~/.hindsight/config.json` or a bank derived from the directory name, that
+> describes the pre-3.7.0 behaviour — see [`CONFIGURATION.md`](./CONFIGURATION.md).
+
+
 Diagnostic recipes for common issues. For full automated diagnostic,
 run `/fpl-hsmem:diagnose` — it walks 6 checks and reports a verdict.
 

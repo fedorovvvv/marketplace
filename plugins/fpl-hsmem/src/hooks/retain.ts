@@ -14,7 +14,7 @@
 
 import { readTranscript } from "../lib/transcript.js";
 import { HindsightClient } from "../lib/client.js";
-import { loadConfig, debugLog, type HindsightConfig } from "../lib/config.js";
+import { loadProjectConfig, debugLog } from "../lib/config.js";
 import { prepareRetentionTranscript } from "../lib/content.js";
 import { incrementTurnCount, trackRetention } from "../lib/state.js";
 
@@ -43,8 +43,13 @@ function resolveTemplate(value: string, vars: Record<string, string>): string {
 
 export async function runRetain(hookInput: HookInput, force = false): Promise<void> {
   const cwd = hookInput.cwd ?? process.cwd();
-  const config: HindsightConfig = loadConfig(cwd);
+  const loaded = loadProjectConfig(cwd);
+  if (!loaded.active) return; // not an opted-in project: the hook does nothing
+  const { config } = loaded;
 
+  // Transcript capture is OFF unless the project sets `autoRetain: true`. Memory is for curated
+  // facts and decisions, not a store of raw conversation: transcripts carry pasted secrets and
+  // noise, and every captured session becomes an extraction job and a document someone must audit.
   if (!config.autoRetain) {
     debugLog(config, "autoRetain disabled, skipping");
     return;
@@ -87,9 +92,7 @@ export async function runRetain(hookInput: HookInput, force = false): Promise<vo
   }
   const documentId = chunkIndex === 0 ? sessionId : `${sessionId}-c${chunkIndex}`;
 
-  // One resolver only. loadConfig() is a strict superset of deriveBankId(); using both is
-  // what split this project's memory across two banks.
-  const bankId = config.bankId;
+  const bankId = config.defaultBank;
   const client = new HindsightClient(config.url, bankId, config.apiKey);
 
   const timestamp = new Date().toISOString().replace(/\.\d+Z$/, "Z");
@@ -119,6 +122,11 @@ export async function runRetain(hookInput: HookInput, force = false): Promise<vo
   );
 
   try {
+    // Never let a retain create a bank: Hindsight creates one implicitly on first write.
+    if (!(await client.bankExists(bankId))) {
+      process.stderr.write(`[Hindsight] Retain skipped: bank '${bankId}' does not exist on the server\n`);
+      return;
+    }
     await client.retain(
       {
         content: prepared.transcript,

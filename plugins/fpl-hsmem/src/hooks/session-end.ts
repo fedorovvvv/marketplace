@@ -10,7 +10,7 @@
  */
 
 import { runRetain } from "./retain.js";
-import { loadConfig, debugLog } from "../lib/config.js";
+import { loadProjectConfig, debugLog } from "../lib/config.js";
 
 interface HookInput {
   session_id?: string;
@@ -40,7 +40,9 @@ async function main(): Promise<void> {
     }
   }
 
-  const config = loadConfig(hookInput.cwd ?? process.cwd());
+  const loaded = loadProjectConfig(hookInput.cwd ?? process.cwd());
+  if (!loaded.active) return; // not an opted-in project: the hook does nothing
+  const { config } = loaded;
   debugLog(config, `SessionEnd, reason: ${hookInput.reason ?? "unknown"}`);
 
   if (!config.autoRetain) {

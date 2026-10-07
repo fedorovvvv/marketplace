@@ -1,0 +1,262 @@
+// Batch enrichment: validation, routing, secret/PII refusal, dry run vs apply — for the CLI
+// (dist/enrich.mjs) and the memory_retain_batch tool. Offline, against the recording fake server.
+import { spawn } from "node:child_process";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { check, finish, project, fakeHindsight, withServer, PLUGIN } from "./lib/harness.mjs";
+import { parseCandidates, routeBank, scanSensitive, loadProjectConfig } from "../dist/testable.mjs";
+
+const item = (over = {}) => ({
+  kind: "decision",
+  content: "service-x: retries moved into the queue consumer. Why: the HTTP layer retried non-idempotent calls.",
+  context: "ADR-007 in service-x: retries in the consumer",
+  timestamp: "2026-05-06",
+  document_id: "decision:service-x:ADR-007:retries",
+  tags: ["source:adr", "repo:service-x"],
+  metadata: { link: "service-x:docs/adr/ADR-007.md@abc1234", artifact: "ADR-007", repo: "service-x" },
+  ...over,
+});
+const jsonl = (...rows) => rows.map((r) => (typeof r === "string" ? r : JSON.stringify(r))).join("\n") + "\n";
+const opts = { maxChars: 900, routing: {} };
+
+console.log("validation");
+{
+  const ok = parseCandidates(jsonl(item({ bank: "alpha" })), opts);
+  check(ok.lines === 1 && ok.candidates.length === 1 && ok.refused.length === 0, "a well-formed line is accepted", JSON.stringify(ok.refused));
+  const it = ok.candidates[0]?.item ?? {};
+  check(it.update_mode === "replace" && it.observation_scopes === "shared", "items are written replace + shared");
+  check(it.timestamp === "2026-05-06T00:00:00Z", "a bare date becomes a UTC datetime", it.timestamp);
+  check(it.tags?.includes("kind:decision") && it.tags.length === 3, "kind is carried as a tag, once", JSON.stringify(it.tags));
+  check(!("bank" in it) && !("kind" in it), "bank and kind are not sent as item fields");
+
+  const cases = [
+    [item({ bank: "alpha", kind: "idea" }), /kind must be one of/],
+    [item({ bank: "alpha", content: "" }), /content is required/],
+    [item({ bank: "alpha", content: "x".repeat(901) }), /901 chars, over the 900-char cap/],
+    [item({ bank: "alpha", context: undefined }), /context is required/],
+    [item({ bank: "alpha", timestamp: "" }), /timestamp is required/],
+    [item({ bank: "alpha", timestamp: "last tuesday" }), /timestamp is required/],
+    [item({ bank: "alpha", document_id: undefined }), /document_id is required/],
+    [item({ bank: "alpha", document_id: "a/../b" }), /may not contain "\.\."/],
+    [item({ bank: "alpha", document_id: "decision:a/b" }), /must start with a letter/],
+    [item({ bank: "alpha", documentId: "x" }), /unknown field\(s\) documentId/],
+    [item({ bank: "alpha", metadata: { repo: 5 } }), /metadata must be an object of string values/],
+    [item({ bank: "alpha", tags: "a,b" }), /tags must be an array/],
+    [item({ bank: "" }), /bank, when present, must be a non-empty string/],
+    ["{not json", /not valid JSON/],
+    ["[1,2]", /not a JSON object/],
+  ];
+  for (const [row, re] of cases) {
+    const r = parseCandidates(jsonl(row), opts);
+    check(r.refused.length === 1 && re.test(r.refused[0].reasons.join("; ")), `refused: ${re.source}`, JSON.stringify(r.refused));
+  }
+  const capped = parseCandidates(jsonl(item({ bank: "alpha", content: "y".repeat(120) })), { ...opts, maxChars: 100 });
+  check(capped.refused.length === 1, "the content cap is configurable");
+
+  const dup = parseCandidates(jsonl(item({ bank: "alpha" }), "", item({ bank: "alpha", content: "other text" })), opts);
+  check(
+    dup.lines === 2 && dup.candidates.length === 1 && dup.refused[0]?.line === 3 && /duplicate document_id \(first at line 1\)/.test(dup.refused[0].reasons[0]),
+    "a duplicate document_id is refused with both line numbers; blank lines are skipped but counted in numbering",
+    JSON.stringify(dup.refused),
+  );
+}
+
+console.log("routing");
+{
+  const routing = { "service-x": "alpha", "svc-*": "beta", "service-?": "gamma", "*": "delta" };
+  check(routeBank("service-x", routing) === "alpha", "an exact name wins over globs");
+  check(routeBank("svc-billing", routing) === "beta", "`*` glob");
+  check(routeBank("service-y", routing) === "gamma", "`?` glob, first matching glob in declaration order");
+  check(routeBank("anything.else", routing) === "delta", "a catch-all glob is opt-in");
+  check(routeBank("service-x", { "svc-*": "beta" }) === undefined, "no match → undefined");
+  check(routeBank("a.b", { "a?b": "x", "a.b-not": "y" }) === "x" && routeBank("axb", { "a.b": "x" }) === undefined, "glob metacharacters only `*` `?`");
+
+  const routed = parseCandidates(jsonl(item()), { maxChars: 900, routing: { "service-*": "beta" } });
+  check(routed.candidates[0]?.bank === "beta", "a line without `bank` is routed by metadata.repo");
+  const explicit = parseCandidates(jsonl(item({ bank: "alpha" })), { maxChars: 900, routing: { "service-*": "beta" } });
+  check(explicit.candidates[0]?.bank === "alpha", "an explicit bank beats routing");
+  const unrouted = parseCandidates(jsonl(item()), opts);
+  check(unrouted.refused.length === 1 && /no `routing` entry matches repo "service-x"/.test(unrouted.refused[0].reasons[0]), "unroutable line refused, never sent to defaultBank");
+  const norepo = parseCandidates(jsonl(item({ metadata: undefined })), opts);
+  check(norepo.refused.length === 1 && /no metadata.repo/.test(norepo.refused[0].reasons[0]), "no bank and no repo → refused");
+}
+
+console.log("secret / PII scan");
+{
+  const positives = {
+    "private-key": "key: -----BEGIN RSA PRIVATE KEY----- MIIE",
+    bearer: "call it with Bearer abcdef1234567890abcdef",
+    "password-assignment": "the dev db uses password=hunter2",
+    "connection-string": "point it at postgres://svc@db.internal:5432/app",
+    "connection-string ": "via https://deploy:s3cr3t@git.example.org/repo",
+    email: "ask jane.doe@example.com about it",
+    "long-token": "the key is 9fK2mQ7xL4pR8sT1vW3yZ6aB0cD5eF",
+    jwt: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+    "github-token": "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+  };
+  for (const [kind, text] of Object.entries(positives)) {
+    const hits = scanSensitive(text);
+    check(hits.includes(kind.trim()), `flags ${kind.trim()}`, JSON.stringify(hits));
+  }
+  const negatives = [
+    "service-x:.forgeplan/adrs/ADR-001-single-intent-upgrade-flow-with-mode-2-mit-confirm-drop-in-fallback-option-c.md@fb18f8f88",
+    "operation 550e8400-e29b-41d4-a716-446655440000 failed; commit 9fceb02d0ae598e95dc970b74767f19372d61af8 fixed it",
+    "Bearer token auth was rejected in favour of session cookies",
+    "use the useSubscriptionUpgradeStateMachine hook and the v2 OAuth2 flow",
+    "the password policy moved to the identity service",
+  ];
+  for (const text of negatives) check(scanSensitive(text).length === 0, `no false positive: ${text.slice(0, 50)}…`, JSON.stringify(scanSensitive(text)));
+
+  const r = parseCandidates(jsonl(item({ bank: "alpha" }), item({ bank: "alpha", document_id: "d2", content: "contact jane.doe@example.com", context: "Bearer abcdef1234567890abcdef" })), opts);
+  check(r.candidates.length === 1 && r.refused[0]?.line === 2, "the offending line is refused, the clean one kept");
+  const why = r.refused[0]?.reasons.join("; ") ?? "";
+  check(/email in content/.test(why) && /bearer in context/.test(why), "reports kind and field", why);
+  check(!why.includes("jane.doe") && !why.includes("abcdef1234567890"), "never echoes the matched value", why);
+  const meta = parseCandidates(jsonl(item({ bank: "alpha", metadata: { repo: "service-x", link: "https://u:p4ss@host.example/x" } })), opts);
+  check(meta.refused.length === 1 && /in metadata/.test(meta.refused[0].reasons.join()), "metadata values are scanned too");
+}
+
+console.log("config");
+{
+  const base = { url: "http://127.0.0.1:1", banks: ["alpha", "beta"], defaultBank: "alpha" };
+  const good = loadProjectConfig(project({ ...base, routing: { "svc-*": "beta" }, enrichMaxChars: 500 }));
+  check(good.active && good.config.routing["svc-*"] === "beta" && good.config.enrichMaxChars === 500, "routing and enrichMaxChars load", JSON.stringify(good));
+  const dflt = loadProjectConfig(project(base));
+  check(dflt.active && dflt.config.enrichMaxChars === 900 && Object.keys(dflt.config.routing).length === 0, "defaults: 900 chars, no routing");
+  const bad = loadProjectConfig(project({ ...base, routing: { "svc-*": "outside" } }));
+  check(!bad.active && /routing.*"outside" is not in `banks`/.test(bad.reason), "a route to a bank outside the allowlist invalidates the config", bad.reason);
+  const badShape = loadProjectConfig(project({ ...base, routing: ["svc"] }));
+  check(!badShape.active && /`routing` must be an object/.test(badShape.reason), "routing must be an object");
+  const badCap = loadProjectConfig(project({ ...base, enrichMaxChars: 0 }));
+  check(!badCap.active && /enrichMaxChars/.test(badCap.reason), "enrichMaxChars must be positive");
+}
+
+/** Run the built CLI in `cwd`. */
+function cli(cwd, args) {
+  return new Promise((resolve) => {
+    const child = spawn("node", [join(PLUGIN, "dist", "enrich.mjs"), ...args], {
+      cwd,
+      env: { PATH: process.env.PATH, HOME: cwd },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d) => (stdout += d));
+    child.stderr.on("data", (d) => (stderr += d));
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+// alpha, beta exist; "ghost" is allowed but missing on the server; "other" exists but is not allowed.
+const fake = await fakeHindsight(["alpha", "beta", "other"], { documents: { alpha: ["decision:service-x:ADR-007:retries"] } });
+const config = {
+  url: fake.url,
+  banks: ["alpha", "beta", "ghost"],
+  defaultBank: "alpha",
+  tokenFile: "t",
+  routing: { "service-*": "alpha", "web-*": "beta" },
+};
+const FILE = jsonl(
+  item(), //                                                                    1 → alpha (routed), exists
+  item({ document_id: "rejected:service-x:ADR-007:http-retries", kind: "rejected", content: "Rejected: retries in the HTTP client. Why: non-idempotent calls." }), // 2 → alpha
+  item({ document_id: "lesson:web-app:NOTE-1:x", kind: "lesson", metadata: { repo: "web-app" } }), // 3 → beta (routed)
+  item({ document_id: "rule:x:1", kind: "rule", bank: "ghost" }), //            4 → refused: bank missing
+  item({ document_id: "rule:x:2", kind: "rule", bank: "other" }), //            5 → refused: not allowed
+  item({ document_id: "pitfall:x:3", kind: "pitfall", content: "token=ZXlKaGJHY2lPaUpJVXpJMU5pSjk1234 leaked" }), // 6 → secret
+  item({ document_id: "finding:x:4", kind: "finding", metadata: { repo: "unknown-repo" } }), // 7 → unroutable
+);
+const dir = project(config, { t: "tok", "cands.jsonl": FILE });
+const bankScoped = () => fake.requests.filter((r) => r.path.startsWith("/v1/default/banks/"));
+const posts = () => fake.requests.filter((r) => r.method === "POST");
+
+console.log("CLI dry run");
+{
+  const r = await cli(dir, ["cands.jsonl"]);
+  check(r.code === 3, "exit 3 when some lines are refused", `${r.code} ${r.stderr}`);
+  check(posts().length === 0, "dry run writes nothing", JSON.stringify(posts()));
+  check(/DRY RUN — nothing written/.test(r.stdout) && /lines 7 · accepted 3 · refused 4/.test(r.stdout), "summary counts", r.stdout);
+  check(/bank "alpha": 2 item\(s\) \(decision 1, rejected 1\) · already on the server 1 → would be replaced · new 1/.test(r.stdout), "per bank / kind / existing", r.stdout);
+  check(/bank "beta": 1 item\(s\) \(lesson 1\)/.test(r.stdout), "routed to a second bank");
+  check(/line 4 \[rule:x:1\]: Refusing: bank "ghost" does not exist/.test(r.stdout), "missing bank refused with its line");
+  check(/line 5 \[rule:x:2\]: Refusing: bank "other" is not in this project's allowlist/.test(r.stdout), "bank outside the allowlist refused");
+  check(/line 6 \[pitfall:x:3\]: secret\/PII scan: [a-z-]+ in content/.test(r.stdout) && !r.stdout.includes("ZXlKaGJH"), "secret line refused without echoing it", r.stdout);
+  check(/line 7 \[finding:x:4\]: no bank/.test(r.stdout), "unroutable line refused");
+  check(/alpha {2}decision:service-x:ADR-007:retries/.test(r.stdout), "lists the document_ids already on the server");
+  check(/Apply would send 3 item\(s\) in 2 request\(s\)/.test(r.stdout), "says what apply would do");
+  check(!bankScoped().some((q) => q.path.includes("/ghost") || q.path.includes("/other")), "never touches a missing or disallowed bank");
+  const docGets = bankScoped().filter((q) => q.method === "GET" && q.path.includes("/documents/"));
+  check(docGets.some((q) => q.path.endsWith("/documents/decision%3Aservice-x%3AADR-007%3Aretries")), "existence is an exact GET by encoded id", JSON.stringify(docGets.map((q) => q.path)));
+
+  const j = await cli(dir, ["cands.jsonl", "--json"]);
+  const s = JSON.parse(j.stdout);
+  check(s.mode === "dry-run" && s.accepted === 3 && s.refused.length === 4 && s.banks[0].kinds.decision === 1, "--json summary", j.stdout.slice(0, 300));
+}
+
+console.log("CLI apply");
+{
+  const r = await cli(dir, ["cands.jsonl", "--apply", "--batch-size", "1"]);
+  check(r.code === 3, "exit 3: applied, but some lines were refused", `${r.code} ${r.stderr}`);
+  const p = posts();
+  check(p.length === 3, "one request per batch (batch size 1, 3 items)", String(p.length));
+  check(p.every((q) => q.path.endsWith("/memories") && q.body.async === true), "POST /banks/{bank}/memories, async");
+  check(p.filter((q) => q.path === "/v1/default/banks/alpha/memories").length === 2 && p.filter((q) => q.path === "/v1/default/banks/beta/memories").length === 1, "each item went to its own bank");
+  const first = p[0].body.items[0];
+  check(
+    first.document_id === "decision:service-x:ADR-007:retries" && first.update_mode === "replace" && first.observation_scopes === "shared" &&
+      first.timestamp === "2026-05-06T00:00:00Z" && first.context && first.metadata?.link && first.tags.includes("kind:decision"),
+    "item carries content, context, timestamp, document_id, tags, metadata, replace, shared",
+    JSON.stringify(first),
+  );
+  const sent = p.flatMap((q) => q.body.items.map((i) => i.document_id));
+  check(!sent.some((id) => ["rule:x:1", "rule:x:2", "pitfall:x:3", "finding:x:4"].includes(id)), "refused lines are never sent", sent.join());
+  check(/alpha 1\/2: 1 item\(s\) → operation op-\d+/.test(r.stdout) && /Queued\. Extraction is asynchronous/.test(r.stdout), "prints operation ids", r.stdout);
+
+  const again = await cli(dir, ["cands.jsonl", "--apply"]);
+  const p2 = posts().slice(3);
+  check(again.code === 3 && p2.length === 2, "default batch size: one request per bank");
+  check(JSON.stringify(p2.flatMap((q) => q.body.items.map((i) => i.document_id)).sort()) === JSON.stringify(sent.sort()), "a re-run writes the same document_ids (idempotent replace)");
+}
+
+console.log("CLI edges");
+{
+  const clean = project(config, { t: "tok", "c.jsonl": jsonl(item({ bank: "beta", document_id: "decision:clean:1" })) });
+  const r = await cli(clean, ["c.jsonl", "--apply"]);
+  check(r.code === 0, "exit 0 when every line was accepted and queued", `${r.code} ${r.stdout}`);
+  const over = await cli(clean, ["c.jsonl", "--max-chars", "10"]);
+  check(over.code === 3 && /over the 10-char cap/.test(over.stdout), "--max-chars overrides the config cap");
+
+  const failing = await fakeHindsight(["beta"], { failRetain: true });
+  const fdir = project({ ...config, url: failing.url }, { t: "tok", "c.jsonl": jsonl(item({ bank: "beta", document_id: "decision:clean:1" })) });
+  const f = await cli(fdir, ["c.jsonl", "--apply"]);
+  check(f.code === 1 && /beta 1\/1: 1 item\(s\) → FAILED/.test(f.stdout), "a failed batch is reported and exits 1", f.stdout);
+  failing.close();
+
+  const bare = mkdtempSync(join(tmpdir(), "hsmem-noconf-"));
+  writeFileSync(join(bare, "c.jsonl"), jsonl(item({ bank: "beta" })));
+  const n = await cli(bare, ["c.jsonl"]);
+  check(n.code === 1 && /not configured/.test(n.stderr), "no .hindsight.json → exit 1, nothing sent");
+  const u = await cli(clean, []);
+  check(u.code === 2 && /usage/.test(u.stderr), "usage error → exit 2");
+}
+
+console.log("MCP tool");
+{
+  const before = posts().length;
+  await withServer(dir, {}, async ({ list, call }) => {
+    const t = (await list()).find((x) => x.name === "memory_retain_batch");
+    check(Boolean(t) && !t.inputSchema.properties.bank && t.inputSchema.required.join() === "file", "memory_retain_batch is listed, takes file (+apply), no `bank`");
+    let r = await call("memory_retain_batch", { file: "cands.jsonl" });
+    check(!r.isError && /DRY RUN/.test(r.text) && posts().length === before, "dry run by default, nothing written", r.text);
+    check(/apply:true only after they approve/.test(r.text), "tells the agent to get approval first");
+    r = await call("memory_retain_batch", { file: "cands.jsonl", apply: true });
+    check(!r.isError && /APPLY/.test(r.text) && posts().length === before + 2, "apply:true writes", r.text);
+    const outside = mkdtempSync(join(tmpdir(), "hsmem-out-"));
+    writeFileSync(join(outside, "c.jsonl"), jsonl(item({ bank: "alpha" })));
+    r = await call("memory_retain_batch", { file: join(outside, "c.jsonl"), apply: true });
+    check(/outside the project root/.test(r.text) && posts().length === before + 2, "a file outside the project is refused", r.text);
+  });
+}
+
+fake.close();
+finish("enrich");

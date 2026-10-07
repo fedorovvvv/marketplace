@@ -4,7 +4,7 @@
  *
  * Flow:
  *   1. Read hook input from stdin
- *   2. Resolve bank_id from project's .mcp.json (or cwd)
+ *   2. Load the project .hindsight.json (none → no-op); recall reads defaultBank only
  *   3. Compose multi-turn query from transcript if needed
  *   4. Call Hindsight recall
  *   5. Output additionalContext as hookSpecificOutput
@@ -14,7 +14,7 @@
 
 import { readTranscript } from "../lib/transcript.js";
 import { HindsightClient, type RecallResult } from "../lib/client.js";
-import { loadConfig, debugLog } from "../lib/config.js";
+import { loadProjectConfig, debugLog } from "../lib/config.js";
 import {
   composeRecallQuery,
   formatCurrentTime,
@@ -52,7 +52,9 @@ async function main(): Promise<void> {
   }
 
   const cwd = hookInput.cwd ?? process.cwd();
-  const config = loadConfig(cwd);
+  const loaded = loadProjectConfig(cwd);
+  if (!loaded.active) return; // not an opted-in project: the hook does nothing
+  const { config } = loaded;
 
   if (!config.autoRecall) {
     debugLog(config, "autoRecall disabled, skipping");
@@ -65,9 +67,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  // One resolver only. loadConfig() is a strict superset of deriveBankId(); using both is
-  // what split this project's memory across two banks.
-  const bankId = config.bankId;
+  // The hook never fans out across banks: it reads the declared default and nothing else.
+  const bankId = config.defaultBank;
   const client = new HindsightClient(config.url, bankId, config.apiKey);
 
   let query = prompt;

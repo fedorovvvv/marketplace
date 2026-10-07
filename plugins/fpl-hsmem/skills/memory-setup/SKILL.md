@@ -69,7 +69,7 @@ command -v rg ast-grep tgrep chunkhound 2>/dev/null
 ls .tgrep .chunkhound.json 2>/dev/null
 
 # what memory is already wired
-grep -rln HINDSIGHT_BANK_ID .mcp.json .claude/settings.json .claude/settings.local.json 2>/dev/null
+ls .hindsight.json 2>/dev/null && cat .hindsight.json   # never print the tokenFile contents
 ls .forgeplan forge docs/adr 2>/dev/null
 ```
 
@@ -260,6 +260,7 @@ the one who pays for the model, the disk and the leaked transcript.
    of the pair. This exact failure has happened here: one project wrote to three
    banks at once because two servers and a hook each resolved the name
    differently.
-8. **If the project already has a bank, say who chose it.** `bank_id_source:
-   derived-from-directory` means nobody did, and renaming the directory will
-   move the memory silently.
+8. **If the project is already wired, say which banks it may use.** Report
+   `default_bank` and `allowed_banks` from `memory_get_current_bank`; a bank
+   that is not on the server must be created by an operator — this plugin
+   never creates one.

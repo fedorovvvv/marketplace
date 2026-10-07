@@ -1,5 +1,12 @@
 # Retrieval layers and memory — which question goes where
 
+> [!IMPORTANT]
+> **Project-only configuration.** Configuration is project-only (`.hindsight.json`, several banks, no
+> derived bank, `autoRetain`/`autoRecall` off by default). Where this page mentions `.mcp.json`,
+> `HINDSIGHT_BANK_ID`, `~/.hindsight/config.json` or a bank derived from the directory name, that
+> describes the pre-3.7.0 behaviour — see [`CONFIGURATION.md`](./CONFIGURATION.md).
+
+
 A developer asks two kinds of question all day. **"Where is it?"** is answered by search, and which
 kind of search depends entirely on what you already know about the thing. **"Why is it like that?"**
 is answered by decisions and memory. Using the wrong layer is the failure mode, and it almost never

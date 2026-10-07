@@ -15,8 +15,14 @@ const USER_AGENT = `hindsight-mcp/${pluginVersion()}`;
  * rejects it. Do not "simplify" this pattern.
  */
 const PATH_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9._~-]*$/;
+/**
+ * Document ids additionally allow `:` — namespaced ids such as `decision:<repo>:<ARTIFACT>` are the
+ * natural stable key for curated items. A colon cannot re-address a request: it is percent-encoded
+ * into one path segment, and the leading-character and `..` rules below still apply.
+ */
+const DOCUMENT_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9._~:-]*$/;
 
-export function assertPathId(value: unknown, what = "id"): string {
+export function assertPathId(value: unknown, what = "id", colon = false): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new Error(`${what} must be a non-empty string`);
   }
@@ -26,10 +32,10 @@ export function assertPathId(value: unknown, what = "id"): string {
   if (value.includes("..")) {
     throw new Error(`${what} may not contain ".." (path traversal)`);
   }
-  if (!PATH_ID_RE.test(value)) {
+  if (!(colon ? DOCUMENT_ID_RE : PATH_ID_RE).test(value)) {
     throw new Error(
       `${what} must start with a letter, digit or underscore and contain only ` +
-        `letters, digits, dot, underscore, tilde or hyphen (got ${JSON.stringify(value)})`,
+        `letters, digits, dot, underscore, tilde${colon ? ", colon" : ""} or hyphen (got ${JSON.stringify(value)})`,
     );
   }
   return value;
@@ -83,13 +89,18 @@ export interface RetainItem {
    */
   update_mode?: "replace" | "append";
   context?: string;
+  /** ISO 8601 — when the content occurred. Omitted means "now" on the server. */
+  timestamp?: string;
   metadata?: Record<string, string>;
   tags?: string[];
+  observation_scopes?: "per_tag" | "combined" | "all_combinations" | "shared";
 }
 
 export interface RetainResponse {
   success?: boolean;
   usage?: { total_tokens?: number };
+  operation_id?: string | null;
+  operation_ids?: string[] | null;
   [key: string]: unknown;
 }
 
@@ -127,7 +138,7 @@ export class HindsightClient {
    * the bank prefix — so a segment that somehow escapes validation still cannot re-address the
    * request at the bank base or above it.
    */
-  private bankUrl(segments: string[], query?: Record<string, string>, bankId?: string): string {
+  private bankUrl(segments: string[], query?: Record<string, string | string[]>, bankId?: string): string {
     const prefix = this.bankPath(bankId);
     const tail = segments.map((s, i) => encodeURIComponent(assertPathId(s, `segment ${i}`))).join("/");
     const path = tail ? `${prefix}/${tail}` : prefix;
@@ -135,7 +146,12 @@ export class HindsightClient {
       throw new Error(`refusing to build a request outside ${prefix}`);
     }
     const qs = query
-      ? "?" + Object.entries(query).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&")
+      ? "?" +
+        Object.entries(query)
+          // A list is sent as a repeated key — FastAPI's `list[str] = Query()` (e.g. `tags`) reads
+          // `tags=a&tags=b`; a comma-joined value is one tag named "a,b".
+          .flatMap(([k, v]) => (Array.isArray(v) ? v : [v]).map((x) => `${encodeURIComponent(k)}=${encodeURIComponent(x)}`))
+          .join("&")
       : "";
     return path + qs;
   }
@@ -191,6 +207,24 @@ export class HindsightClient {
     }
   }
 
+  /**
+   * Whether `bankId` exists on the server, without creating it.
+   *
+   * Hindsight creates a bank implicitly on the first bank-scoped write (and several reads), so
+   * "just try it" is how orphan banks are born. This asks the bank list instead — `GET
+   * /v1/default/banks?q=` is a substring filter, so the match is checked exactly here — and that
+   * endpoint never creates anything.
+   */
+  async bankExists(bankId: string, timeoutMs = 10000): Promise<boolean> {
+    const res = await this.request<{ banks?: { bank_id?: string }[] }>(
+      "GET",
+      `/v1/default/banks?q=${encodeURIComponent(assertBankId(bankId))}&limit=1000`,
+      undefined,
+      timeoutMs,
+    );
+    return (res.banks ?? []).some((b) => b.bank_id === bankId);
+  }
+
   async retain(
     items: RetainItem | RetainItem[],
     options: { async?: boolean; bankId?: string; timeoutMs?: number } = {},
@@ -241,12 +275,16 @@ export class HindsightClient {
     return this.request("POST", `${this.bankPath()}/reflect`, body, options.timeoutMs ?? 120000);
   }
 
-  /** Exact-id document lookup. The `q` list filter matches substrings, which is not existence. */
+  /**
+   * Exact-id document lookup. The `q` list filter matches substrings, which is not existence.
+   * Document ids may carry `:` (see DOCUMENT_ID_RE), so the segment is validated here rather than
+   * by `bankUrl`.
+   */
   async getDocument(id: string): Promise<{ memory_unit_count?: number; [k: string]: unknown } | null> {
     try {
       return await this.request(
         "GET",
-        this.bankUrl(["documents", id]),
+        `${this.bankPath()}/documents/${encodeURIComponent(assertPathId(id, "document id", true))}`,
         undefined,
         10000,
       );
@@ -303,6 +341,9 @@ export class HindsightClient {
    * Only `reflect_mission`. `retain_mission` steers WHAT GETS EXTRACTED on every future retain, so
    * an agent able to set it can rewrite the memory rules for everything that follows — through a
    * tool that reads as cosmetic. Extraction control is an operator setting, not a tool argument.
+   *
+   * Hindsight 0.10: `PATCH /config {"updates":{"reflect_mission":…}}` — never the removed
+   * `PUT /profile` / `POST /background`, which now answer 410.
    */
   async setMission(mission: string): Promise<unknown> {
     return this.request("PATCH", `${this.bankPath()}/config`, {
@@ -340,7 +381,7 @@ export class HindsightClient {
       timeoutMs?: number;
     } = {},
   ): Promise<{ items?: unknown[]; total?: number; [k: string]: unknown }> {
-    const query: Record<string, string> = {
+    const query: Record<string, string | string[]> = {
       limit: String(options.limit ?? 10),
       offset: String(options.offset ?? 0),
     };
@@ -348,7 +389,7 @@ export class HindsightClient {
     if (options.type) query.type = options.type;
     if (options.state && options.state !== "all") query.state = options.state;
     if (options.documentId) query.document_id = assertPathId(options.documentId, "document_id");
-    if (options.tags?.length) query.tags = options.tags.join(",");
+    if (options.tags?.length) query.tags = options.tags;
     return this.request(
       "GET",
       this.bankUrl(["memories", "list"], query),
@@ -464,8 +505,8 @@ export class HindsightClient {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Bank configuration. `GET /profile` (which upstream's `get_bank` maps to) returns the name and
-  // mission; the behavioural switches live here and were unreachable from any tool.
+  // Bank configuration. Hindsight 0.10 removed `GET/PUT /profile` and `POST /background` (both
+  // answer 410); the mission now lives here as `reflect_mission`, next to the behavioural switches.
   // ---------------------------------------------------------------------------------------------
 
   async getBankConfig(): Promise<Record<string, unknown>> {

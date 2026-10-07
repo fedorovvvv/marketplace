@@ -57,7 +57,8 @@ function pluginVersion() {
 // src/lib/client.ts
 var USER_AGENT = `hindsight-mcp/${pluginVersion()}`;
 var PATH_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9._~-]*$/;
-function assertPathId(value, what = "id") {
+var DOCUMENT_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9._~:-]*$/;
+function assertPathId(value, what = "id", colon = false) {
   if (typeof value !== "string" || value.length === 0) {
     throw new Error(`${what} must be a non-empty string`);
   }
@@ -67,9 +68,9 @@ function assertPathId(value, what = "id") {
   if (value.includes("..")) {
     throw new Error(`${what} may not contain ".." (path traversal)`);
   }
-  if (!PATH_ID_RE.test(value)) {
+  if (!(colon ? DOCUMENT_ID_RE : PATH_ID_RE).test(value)) {
     throw new Error(
-      `${what} must start with a letter, digit or underscore and contain only letters, digits, dot, underscore, tilde or hyphen (got ${JSON.stringify(value)})`
+      `${what} must start with a letter, digit or underscore and contain only letters, digits, dot, underscore, tilde${colon ? ", colon" : ""} or hyphen (got ${JSON.stringify(value)})`
     );
   }
   return value;
@@ -129,7 +130,7 @@ var HindsightClient = class {
     if (!path.startsWith(`${prefix}/`) || path.length <= prefix.length + 1) {
       throw new Error(`refusing to build a request outside ${prefix}`);
     }
-    const qs = query ? "?" + Object.entries(query).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&") : "";
+    const qs = query ? "?" + Object.entries(query).flatMap(([k, v]) => (Array.isArray(v) ? v : [v]).map((x) => `${encodeURIComponent(k)}=${encodeURIComponent(x)}`)).join("&") : "";
     return path + qs;
   }
   async request(method, path, body, timeoutMs = 15e3) {
@@ -171,6 +172,23 @@ var HindsightClient = class {
       return false;
     }
   }
+  /**
+   * Whether `bankId` exists on the server, without creating it.
+   *
+   * Hindsight creates a bank implicitly on the first bank-scoped write (and several reads), so
+   * "just try it" is how orphan banks are born. This asks the bank list instead — `GET
+   * /v1/default/banks?q=` is a substring filter, so the match is checked exactly here — and that
+   * endpoint never creates anything.
+   */
+  async bankExists(bankId, timeoutMs = 1e4) {
+    const res = await this.request(
+      "GET",
+      `/v1/default/banks?q=${encodeURIComponent(assertBankId(bankId))}&limit=1000`,
+      void 0,
+      timeoutMs
+    );
+    return (res.banks ?? []).some((b) => b.bank_id === bankId);
+  }
   async retain(items, options = {}) {
     const list = Array.isArray(items) ? items : [items];
     return this.request(
@@ -203,12 +221,16 @@ var HindsightClient = class {
     if (options.maxTokens) body.max_tokens = options.maxTokens;
     return this.request("POST", `${this.bankPath()}/reflect`, body, options.timeoutMs ?? 12e4);
   }
-  /** Exact-id document lookup. The `q` list filter matches substrings, which is not existence. */
+  /**
+   * Exact-id document lookup. The `q` list filter matches substrings, which is not existence.
+   * Document ids may carry `:` (see DOCUMENT_ID_RE), so the segment is validated here rather than
+   * by `bankUrl`.
+   */
   async getDocument(id) {
     try {
       return await this.request(
         "GET",
-        this.bankUrl(["documents", id]),
+        `${this.bankPath()}/documents/${encodeURIComponent(assertPathId(id, "document id", true))}`,
         void 0,
         1e4
       );
@@ -253,6 +275,9 @@ var HindsightClient = class {
    * Only `reflect_mission`. `retain_mission` steers WHAT GETS EXTRACTED on every future retain, so
    * an agent able to set it can rewrite the memory rules for everything that follows — through a
    * tool that reads as cosmetic. Extraction control is an operator setting, not a tool argument.
+   *
+   * Hindsight 0.10: `PATCH /config {"updates":{"reflect_mission":…}}` — never the removed
+   * `PUT /profile` / `POST /background`, which now answer 410.
    */
   async setMission(mission) {
     return this.request("PATCH", `${this.bankPath()}/config`, {
@@ -285,7 +310,7 @@ var HindsightClient = class {
     if (options.type) query.type = options.type;
     if (options.state && options.state !== "all") query.state = options.state;
     if (options.documentId) query.document_id = assertPathId(options.documentId, "document_id");
-    if (options.tags?.length) query.tags = options.tags.join(",");
+    if (options.tags?.length) query.tags = options.tags;
     return this.request(
       "GET",
       this.bankUrl(["memories", "list"], query),
@@ -377,8 +402,8 @@ var HindsightClient = class {
     return this.request("DELETE", this.bankUrl(["directives", id]), void 0, 15e3);
   }
   // ---------------------------------------------------------------------------------------------
-  // Bank configuration. `GET /profile` (which upstream's `get_bank` maps to) returns the name and
-  // mission; the behavioural switches live here and were unreachable from any tool.
+  // Bank configuration. Hindsight 0.10 removed `GET/PUT /profile` and `POST /background` (both
+  // answer 410); the mission now lives here as `reflect_mission`, next to the behavioural switches.
   // ---------------------------------------------------------------------------------------------
   async getBankConfig() {
     return this.request("GET", `${this.bankPath()}/config`, void 0, 15e3);
@@ -410,65 +435,13 @@ var HindsightClient = class {
 };
 
 // src/lib/config.ts
-import { readFileSync as readFileSync4, existsSync as existsSync3 } from "node:fs";
-import { join as join3 } from "node:path";
-import { homedir } from "node:os";
-
-// src/lib/bank.ts
-import { execFileSync } from "node:child_process";
-import { basename, dirname as dirname2, normalize, join as join2 } from "node:path";
 import { readFileSync as readFileSync3, existsSync as existsSync2 } from "node:fs";
-function resolveProjectRoot(cwd) {
-  if (!cwd) return process.cwd();
-  let dir = normalize(cwd);
-  for (; ; ) {
-    if (existsSync2(join2(dir, ".mcp.json")) || existsSync2(join2(dir, ".hindsight.json"))) return dir;
-    const parent = dirname2(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  try {
-    const out = execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5e3
-    }).trim();
-    if (out) return out;
-  } catch {
-  }
-  return normalize(cwd);
-}
-function resolveProjectName(cwd, resolveWorktrees = true) {
-  if (!cwd) return "unknown";
-  if (!resolveWorktrees) {
-    return basename(normalize(cwd));
-  }
-  try {
-    const out = execFileSync(
-      "git",
-      ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-      { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 5e3 }
-    ).trim();
-    if (out) {
-      const mainRepoPath = out.replace(/\/\.git\/?$/, "");
-      const name = basename(mainRepoPath);
-      if (name) return name;
-    }
-  } catch {
-  }
-  return basename(normalize(cwd));
-}
-
-// src/lib/config.ts
-var DEFAULTS = {
-  bankIdSource: "derived-from-directory",
-  projectRoot: "",
-  url: "http://localhost:8888",
-  bankId: "",
-  apiKey: "",
-  enabled: true,
-  autoRecall: true,
-  autoRetain: true,
+import { execFileSync } from "node:child_process";
+import { dirname as dirname2, isAbsolute, join as join2, normalize, resolve } from "node:path";
+var CONFIG_FILE = ".hindsight.json";
+var TUNING_DEFAULTS = {
+  autoRecall: false,
+  autoRetain: false,
   recallBudget: "mid",
   recallMaxTokens: 1024,
   recallTypes: ["world", "experience"],
@@ -482,120 +455,181 @@ var DEFAULTS = {
   retainToolCalls: false,
   retainContext: "claude-code",
   retainTags: ["{session_id}"],
-  bankMission: "",
-  retainMission: "",
-  debug: false
+  debug: false,
+  enrichMaxChars: 900
 };
-var ENV_MAP = {
-  HINDSIGHT_URL: ["url", "string"],
-  HINDSIGHT_BANK_ID: ["bankId", "string"],
-  HINDSIGHT_API_KEY: ["apiKey", "string"],
-  HINDSIGHT_AUTO_RECALL: ["autoRecall", "boolean"],
-  HINDSIGHT_AUTO_RETAIN: ["autoRetain", "boolean"],
-  HINDSIGHT_RECALL_BUDGET: ["recallBudget", "string"],
-  HINDSIGHT_RECALL_MAX_TOKENS: ["recallMaxTokens", "number"],
-  HINDSIGHT_RECALL_TYPES: ["recallTypes", "json"],
-  HINDSIGHT_RECALL_CONTEXT_TURNS: ["recallContextTurns", "number"],
-  HINDSIGHT_RECALL_MAX_QUERY_CHARS: ["recallMaxQueryChars", "number"],
-  HINDSIGHT_RETAIN_EVERY_N_TURNS: ["retainEveryNTurns", "number"],
-  HINDSIGHT_RETAIN_OVERLAP_TURNS: ["retainOverlapTurns", "number"],
-  HINDSIGHT_RETAIN_TOOL_CALLS: ["retainToolCalls", "boolean"],
-  HINDSIGHT_RETAIN_CONTEXT: ["retainContext", "string"],
-  HINDSIGHT_BANK_MISSION: ["bankMission", "string"],
-  HINDSIGHT_RETAIN_MISSION: ["retainMission", "string"],
-  HINDSIGHT_DEBUG: ["debug", "boolean"]
+var TUNING_TYPES = {
+  autoRecall: "boolean",
+  autoRetain: "boolean",
+  recallBudget: "string",
+  recallMaxTokens: "number",
+  recallTypes: "string[]",
+  recallContextTurns: "number",
+  recallMaxQueryChars: "number",
+  recallRoles: "string[]",
+  recallPromptPreamble: "string",
+  retainEveryNTurns: "number",
+  retainOverlapTurns: "number",
+  retainRoles: "string[]",
+  retainToolCalls: "boolean",
+  retainContext: "string",
+  retainTags: "string[]",
+  debug: "boolean",
+  enrichMaxChars: "number"
 };
-function castEnv(value, type) {
-  switch (type) {
-    case "boolean":
-      return ["1", "true", "yes", "on"].includes(value.toLowerCase());
-    case "number": {
-      const n = Number(value);
-      return Number.isFinite(n) ? n : void 0;
-    }
-    case "json":
-      try {
-        return JSON.parse(value);
-      } catch {
-        return void 0;
-      }
-    default:
-      return value;
+var LEGACY_KEYS = {
+  bankId: "use `banks` + `defaultBank`",
+  apiKey: "never put the token in the config file; use `tokenFile` or `tokenCommand`",
+  bankMission: "missions are set with memory_set_mission (reflect_mission), not from config",
+  retainMission: "retain_mission is an operator setting on the server, not a client config key",
+  enabled: "presence of the file is the switch; delete it (or add .hindsight-disabled) to turn off"
+};
+function isStringArray(v) {
+  return Array.isArray(v) && v.every((x) => typeof x === "string" && x.length > 0);
+}
+function findConfigFile(cwd) {
+  let dir = normalize(resolve(cwd || process.cwd()));
+  for (; ; ) {
+    const candidate = join2(dir, CONFIG_FILE);
+    if (existsSync2(candidate)) return candidate;
+    const parent = dirname2(dir);
+    if (parent === dir) return null;
+    dir = parent;
   }
 }
-function loadJsonFile(path) {
-  if (!existsSync3(path)) return null;
-  try {
-    return JSON.parse(readFileSync4(path, "utf-8"));
-  } catch {
-    return null;
-  }
-}
-function readMcpJsonBank(cwd) {
-  const path = join3(cwd, ".mcp.json");
-  if (!existsSync3(path)) return {};
-  try {
-    const raw = JSON.parse(readFileSync4(path, "utf-8"));
-    const env = raw.mcpServers?.hindsight?.env ?? {};
-    return {
-      url: env.HINDSIGHT_URL,
-      bankId: env.HINDSIGHT_BANK_ID,
-      apiKey: env.HINDSIGHT_API_KEY
-    };
-  } catch {
-    return {};
-  }
-}
-function isDisabled(cwd = process.cwd()) {
-  if (existsSync3(join3(cwd, ".hindsight-disabled"))) return true;
+function isDisabled(cwd = process.cwd(), configDir) {
+  if (existsSync2(join2(cwd, ".hindsight-disabled"))) return true;
+  if (configDir && existsSync2(join2(configDir, ".hindsight-disabled"))) return true;
   const env = process.env.HINDSIGHT_DISABLED ?? "";
   return ["1", "true", "yes", "on"].includes(env.toLowerCase());
 }
-function loadConfig(cwd = process.cwd()) {
-  const config = { ...DEFAULTS };
-  const root = resolveProjectRoot(cwd);
-  config.projectRoot = root;
-  let source = "derived-from-directory";
-  const userConfig = loadJsonFile(join3(homedir(), ".hindsight", "config.json"));
-  if (userConfig) {
-    Object.assign(config, userConfig);
-    if (userConfig.bankId) source = "user-config";
+function readToken(raw, configDir) {
+  const envKey = process.env.HINDSIGHT_API_KEY;
+  if (envKey) return { token: envKey.trim(), source: "env" };
+  if (raw.tokenFile !== void 0) {
+    if (typeof raw.tokenFile !== "string" || !raw.tokenFile) throw new Error("`tokenFile` must be a non-empty string");
+    const path = isAbsolute(raw.tokenFile) ? raw.tokenFile : resolve(configDir, raw.tokenFile);
+    let text;
+    try {
+      text = readFileSync3(path, "utf-8");
+    } catch (err) {
+      throw new Error(`cannot read tokenFile ${path}: ${err.code ?? err.message}`);
+    }
+    const token = text.trim();
+    if (!token) throw new Error(`tokenFile ${path} is empty`);
+    return { token, source: "tokenFile" };
   }
-  const mcpBank = readMcpJsonBank(root);
-  if (mcpBank.url) config.url = mcpBank.url;
-  if (mcpBank.bankId) {
-    config.bankId = mcpBank.bankId;
-    source = "mcp.json";
+  if (raw.tokenCommand !== void 0) {
+    if (!isStringArray(raw.tokenCommand) || raw.tokenCommand.length === 0) {
+      throw new Error("`tokenCommand` must be a non-empty array of strings (argv, no shell)");
+    }
+    const [cmd, ...args] = raw.tokenCommand;
+    let out;
+    try {
+      out = execFileSync(cmd, args, {
+        cwd: configDir,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 1e4
+      });
+    } catch (err) {
+      throw new Error(`tokenCommand ${cmd} failed: ${err.message.split("\n")[0]}`);
+    }
+    const token = out.trim();
+    if (!token) throw new Error(`tokenCommand ${cmd} printed nothing`);
+    return { token, source: "tokenCommand" };
   }
-  if (mcpBank.apiKey) config.apiKey = mcpBank.apiKey;
-  const projectConfig = loadJsonFile(join3(root, ".hindsight.json"));
-  if (projectConfig) {
-    Object.assign(config, projectConfig);
-    if (projectConfig.bankId) source = "hindsight.json";
+  return { token: "", source: "none" };
+}
+function loadProjectConfig(cwd = process.cwd()) {
+  const configPath = findConfigFile(cwd);
+  if (!configPath) {
+    return { active: false, reason: `no ${CONFIG_FILE} at or above ${resolve(cwd || process.cwd())}` };
   }
-  for (const [envName, [key, type]] of Object.entries(ENV_MAP)) {
-    const raw = process.env[envName];
-    if (raw === void 0) continue;
-    const value = castEnv(raw, type);
-    if (value !== void 0) {
-      config[key] = value;
-      if (key === "bankId") source = "env";
+  const configDir = dirname2(configPath);
+  if (isDisabled(cwd, configDir)) {
+    return { active: false, reason: "disabled by .hindsight-disabled or HINDSIGHT_DISABLED", configPath };
+  }
+  let raw;
+  try {
+    const parsed = JSON.parse(readFileSync3(configPath, "utf-8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not a JSON object");
+    raw = parsed;
+  } catch (err) {
+    return { active: false, reason: `${configPath} is not valid JSON: ${err.message}`, configPath };
+  }
+  const problems = [];
+  for (const [k, why] of Object.entries(LEGACY_KEYS)) {
+    if (k in raw) problems.push(`\`${k}\` is not supported \u2014 ${why}`);
+  }
+  if (typeof raw.url !== "string" || !/^https?:\/\//.test(raw.url)) problems.push("`url` must be an http(s) URL");
+  if (!isStringArray(raw.banks) || raw.banks.length === 0) problems.push("`banks` must be a non-empty array of bank ids");
+  if (typeof raw.defaultBank !== "string" || !raw.defaultBank) problems.push("`defaultBank` is required");
+  else if (isStringArray(raw.banks) && !raw.banks.includes(raw.defaultBank)) {
+    problems.push(`\`defaultBank\` "${raw.defaultBank}" is not in \`banks\``);
+  }
+  const tuning = { ...TUNING_DEFAULTS };
+  for (const [key, type] of Object.entries(TUNING_TYPES)) {
+    if (!(key in raw)) continue;
+    const v = raw[key];
+    const okType = type === "string[]" ? isStringArray(v) : typeof v === type;
+    if (!okType) {
+      problems.push(`\`${key}\` must be a ${type}`);
+      continue;
+    }
+    tuning[key] = v;
+  }
+  if (!["low", "mid", "high"].includes(tuning.recallBudget)) problems.push("`recallBudget` must be low, mid or high");
+  if (!Number.isInteger(tuning.enrichMaxChars) || tuning.enrichMaxChars < 1) {
+    problems.push("`enrichMaxChars` must be a positive integer");
+  }
+  const routing = {};
+  if (raw.routing !== void 0) {
+    if (!raw.routing || typeof raw.routing !== "object" || Array.isArray(raw.routing)) {
+      problems.push("`routing` must be an object mapping a repository name or glob to a bank");
+    } else {
+      for (const [pattern, bank] of Object.entries(raw.routing)) {
+        if (!pattern || typeof bank !== "string" || !bank) {
+          problems.push(`\`routing\` entry "${pattern}" must map to a bank id string`);
+        } else if (isStringArray(raw.banks) && !raw.banks.includes(bank)) {
+          problems.push(`\`routing\` entry "${pattern}" \u2192 "${bank}" is not in \`banks\``);
+        } else {
+          routing[pattern] = bank;
+        }
+      }
     }
   }
-  if (!config.bankId) {
-    config.bankId = resolveProjectName(root);
-    source = "derived-from-directory";
+  let token = { token: "", source: "none" };
+  if (problems.length === 0) {
+    try {
+      token = readToken(raw, configDir);
+    } catch (err) {
+      problems.push(err.message);
+    }
   }
-  config.bankIdSource = source;
-  if (isDisabled(root)) {
-    config.enabled = false;
-    config.autoRecall = false;
-    config.autoRetain = false;
+  if (problems.length > 0) {
+    return { active: false, reason: `${configPath}: ${problems.join("; ")}`, configPath };
   }
-  return config;
+  const envUrl = process.env.HINDSIGHT_URL;
+  const debugEnv = (process.env.HINDSIGHT_DEBUG ?? "").toLowerCase();
+  return {
+    active: true,
+    config: {
+      ...tuning,
+      debug: tuning.debug || ["1", "true", "yes", "on"].includes(debugEnv),
+      url: (envUrl || raw.url).replace(/\/$/, ""),
+      banks: [...new Set(raw.banks)],
+      defaultBank: raw.defaultBank,
+      apiKey: token.token,
+      tokenSource: token.source,
+      configPath,
+      projectRoot: configDir,
+      routing
+    }
+  };
 }
 function debugLog(config, ...args) {
-  if (config.debug) {
+  if (config?.debug) {
     console.error("[Hindsight]", ...args);
   }
 }
@@ -604,6 +638,7 @@ function debugLog(config, ...args) {
 var TOOL_NAMES = [
   // memory — write and read
   "memory_retain",
+  "memory_retain_batch",
   "memory_recall",
   "memory_reflect",
   "memory_status",
@@ -802,16 +837,16 @@ function prepareJsonTranscript(messages, allowed) {
 
 // src/lib/state.ts
 import {
-  readFileSync as readFileSync5,
+  readFileSync as readFileSync4,
   writeFileSync,
   mkdirSync,
-  existsSync as existsSync4,
+  existsSync as existsSync3,
   renameSync,
   unlinkSync
 } from "node:fs";
-import { join as join4 } from "node:path";
-import { homedir as homedir2 } from "node:os";
-var STATE_DIR = process.env.CLAUDE_PLUGIN_DATA ? join4(process.env.CLAUDE_PLUGIN_DATA, "state") : join4(homedir2(), ".hindsight", "state");
+import { join as join3 } from "node:path";
+import { homedir } from "node:os";
+var STATE_DIR = process.env.CLAUDE_PLUGIN_DATA ? join3(process.env.CLAUDE_PLUGIN_DATA, "state") : join3(homedir(), ".hindsight", "state");
 var MAX_TRACKED_SESSIONS = 1e4;
 function ensureDir() {
   mkdirSync(STATE_DIR, { recursive: true });
@@ -821,13 +856,13 @@ function sanitizeName(name) {
 }
 function statePath(name) {
   ensureDir();
-  return join4(STATE_DIR, sanitizeName(name));
+  return join3(STATE_DIR, sanitizeName(name));
 }
 function readJson(name, fallback) {
   const path = statePath(name);
-  if (!existsSync4(path)) return fallback;
+  if (!existsSync3(path)) return fallback;
   try {
-    return JSON.parse(readFileSync5(path, "utf-8"));
+    return JSON.parse(readFileSync4(path, "utf-8"));
   } catch {
     return fallback;
   }
@@ -894,7 +929,9 @@ function resolveTemplate(value, vars) {
 }
 async function runRetain(hookInput, force = false) {
   const cwd = hookInput.cwd ?? process.cwd();
-  const config = loadConfig(cwd);
+  const loaded = loadProjectConfig(cwd);
+  if (!loaded.active) return;
+  const { config } = loaded;
   if (!config.autoRetain) {
     debugLog(config, "autoRetain disabled, skipping");
     return;
@@ -930,7 +967,7 @@ async function runRetain(hookInput, force = false) {
     );
   }
   const documentId = chunkIndex === 0 ? sessionId : `${sessionId}-c${chunkIndex}`;
-  const bankId = config.bankId;
+  const bankId = config.defaultBank;
   const client = new HindsightClient(config.url, bankId, config.apiKey);
   const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/\.\d+Z$/, "Z");
   const templateVars = {
@@ -955,6 +992,11 @@ async function runRetain(hookInput, force = false) {
     `Retain to bank '${bankId}', doc '${documentId}', ${prepared.messageCount} msgs, ${prepared.transcript.length} chars${force ? " [forced]" : ""}`
   );
   try {
+    if (!await client.bankExists(bankId)) {
+      process.stderr.write(`[Hindsight] Retain skipped: bank '${bankId}' does not exist on the server
+`);
+      return;
+    }
     await client.retain(
       {
         content: prepared.transcript,
@@ -1015,7 +1057,9 @@ async function main2() {
       return;
     }
   }
-  const config = loadConfig(hookInput.cwd ?? process.cwd());
+  const loaded = loadProjectConfig(hookInput.cwd ?? process.cwd());
+  if (!loaded.active) return;
+  const { config } = loaded;
   debugLog(config, `SessionEnd, reason: ${hookInput.reason ?? "unknown"}`);
   if (!config.autoRetain) {
     debugLog(config, "autoRetain disabled, skipping final retain");

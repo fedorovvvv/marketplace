@@ -6,6 +6,61 @@ All notable changes to `fpl-hsmem` are documented here. Format:
 
 ## [Unreleased]
 
+## [3.7.0] — 2026-10-07
+
+### Added
+
+- **Batch enrichment.** New MCP tool `memory_retain_batch {file, apply}` and CLI
+  `dist/enrich.mjs <file> [--apply]` write a JSONL file of distilled items (`decision`,
+  `rejected`, `lesson`, `pitfall`, `rule`, `finding`) into memory, one bank per item. Every line
+  is validated (fields, kind, content cap, ISO timestamp, `document_id` shape, duplicates), routed
+  (explicit `bank`, else `routing` by `metadata.repo`), gated (allowlist + exists on the server,
+  never created) and scanned for secrets and personal data; offending lines are refused with their
+  line numbers and never sent. Dry run by default — counts per bank and kind, refused lines, which
+  `document_id`s already exist, samples. Apply posts per bank in batches, `async`, with
+  `update_mode: "replace"` and `observation_scopes: "shared"`, and prints operation ids;
+  re-running a file is idempotent.
+- Config keys `routing` (repository name or glob → bank; every target must be in `banks`) and
+  `enrichMaxChars` (default 900).
+- Skill `/fpl-hsmem:enrich`: the procedure for distilling design records, decision ledgers,
+  review threads, chat threads and (optionally) one's own session transcripts into linked items,
+  with a dry run shown to a human before apply and a recall spot-check after.
+- `tests/test-enrich.sh`: validation, routing, refusal, dry run vs apply, CLI exit codes, MCP tool.
+
+### Changed
+
+- The allowlist + existence check moved to `lib/banks.ts` (`BankGate`), shared by the MCP server
+  and the CLI. Behaviour unchanged.
+- `getDocument` accepts `:` in a document id (percent-encoded into one path segment; the
+  leading-character and `..` rules still apply), so namespaced ids can be looked up exactly.
+
+### Changed (breaking for 3.6.x configurations)
+
+- **Project-only opt-in.** Without a `.hindsight.json` at or above cwd the MCP server lists no
+  tools and every hook is a no-op. `~/.hindsight/config.json`, `.mcp.json` env and the
+  derive-bank-from-directory fallback are gone; env vars may override `url` / token only.
+- **Schema:** `url`, `banks`, `defaultBank`, `tokenFile` | `tokenCommand`, `autoRecall` (default
+  false), `autoRetain` (default false), plus the upstream tuning keys. `bankId`, `apiKey`,
+  `bankMission`, `retainMission`, `enabled` make the config invalid instead of being reinterpreted.
+- **Transcript capture off by default.** Stop / SessionEnd hooks stay registered and do nothing
+  unless `autoRetain: true`.
+- `setup.mjs` scaffolds `.hindsight.json`; the `.mcp.json` and hook-settings templates are removed.
+
+### Added
+
+- Optional `bank` on every bank-scoped tool (all except `memory_get_current_bank`). A bank outside
+  the allowlist or missing on the server is refused before any bank-scoped request; nothing
+  creates a bank. `memory_get_current_bank` reports `default_bank`, `allowed_banks`,
+  `config_file`, `token_source`.
+- Offline tests: project config, multi-bank, no transcript capture, Hindsight 0.10 contract.
+
+### Fixed
+
+- `memory_list` sent `tags` comma-joined; Hindsight's list endpoint takes `tags` as a repeated
+  query key, so a multi-tag filter matched one tag named `a,b`.
+- Verified against Hindsight v0.10.2 that no tool calls the removed `/profile` or `/background`
+  endpoints (`memory_set_mission` is `PATCH /config {"updates":{"reflect_mission":…}}`).
+
 ## [3.6.3] — 2026-09-11
 
 ### Fixed

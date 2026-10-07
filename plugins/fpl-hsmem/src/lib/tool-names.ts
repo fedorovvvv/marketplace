@@ -18,6 +18,7 @@
 export const TOOL_NAMES = [
   // memory — write and read
   "memory_retain",
+  "memory_retain_batch",
   "memory_recall",
   "memory_reflect",
   "memory_status",
@@ -78,6 +79,7 @@ export type ToolName = (typeof TOOL_NAMES)[number];
  */
 export const MEMORY_WRITE_TOOLS = [
   "memory_retain",
+  "memory_retain_batch",
   "memory_set_mission",
   "memory_invalidate",
   "memory_reconsolidate",

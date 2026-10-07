@@ -1,19 +1,21 @@
 # Hindsight memory — {{BANK_ID}}
 
-This project uses Hindsight bank `{{BANK_ID}}` (see `.mcp.json`).
-Auto-recall and auto-retain are enabled via `.claude/settings.local.json`.
+This project's default Hindsight bank is `{{BANK_ID}}` (see `.hindsight.json`;
+`memory_get_current_bank` lists every bank this project may use). Auto-recall and
+auto-retain are off unless `.hindsight.json` turns them on.
 
 ## What happens automatically
 
-- **Before each user prompt** the `recall.js` hook searches this bank for
-  relevant memories and silently appends them to the message. Claude sees
-  them, the user does not.
-- **After each response** the `retain.js` hook saves the transcript once
-  every N turns.
-- **On session end** `session-end.js` forces a final retain.
+- **Before each user prompt** — only if `.hindsight.json` sets `autoRecall: true` —
+  the recall hook searches the default bank and silently appends relevant
+  memories to the message. Claude sees them, the user does not.
+- **After each response / on session end** — only if `autoRetain: true`
+  (default false) — the retain hooks capture the transcript. Off by default:
+  memory is for curated facts and decisions, not raw conversation.
 
-So **don't call `memory_recall` and `memory_retain` reflexively** — it's
-already happening. Manual calls are only for the special cases below.
+So with the defaults, **write deliberately** with `memory_retain` (pass `bank`
+when the fact belongs to a bank other than the default), and recall by hand
+when the task needs history.
 
 ## Mental models in this bank
 

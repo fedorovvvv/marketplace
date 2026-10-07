@@ -13,5 +13,7 @@
  */
 export { assertPathId, assertBankId } from "./lib/client.js";
 export { stripMemoryTags, escapeMemoryMarkers } from "./lib/content.js";
-export { redact, redactionCount, redactDeep } from "./lib/redact.js";
+export { redact, redactionCount, redactDeep, secretKinds } from "./lib/redact.js";
 export { TOOL_NAMES, isOwnTool } from "./lib/tool-names.js";
+export { loadProjectConfig, findConfigFile } from "./lib/config.js";
+export { parseCandidates, routeBank, scanSensitive } from "./lib/enrich.js";

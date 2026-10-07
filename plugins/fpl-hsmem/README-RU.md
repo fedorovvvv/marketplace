@@ -2,7 +2,10 @@
 
 # fpl-hsmem
 
-> Долговременная межсессионная память для Claude Code. Обёртка над [Hindsight](https://github.com/vectorize-io/hindsight): 27 MCP инструментов, 3 авто-хука, 9 вспомогательных skills и агент-куратор — Claude помнит контекст между сессиями, проектами и неделями работы.
+> [!IMPORTANT]
+> **3.7.0.** Конфигурация только проектная (`.hindsight.json`: `url`, `banks`, `defaultBank`, `tokenFile`), несколько банков по белому списку, банк никогда не выводится из имени папки и не создаётся, `autoRetain`/`autoRecall` по умолчанию выключены, совместимость с Hindsight 0.10, пакетная запись выжимки знаний (`memory_retain_batch`, `dist/enrich.mjs`, скилл `/fpl-hsmem:enrich`). Актуальное описание — [`README.md`](./README.md), [`CONFIGURATION.md`](./CONFIGURATION.md); ниже — текст до 3.7.0.
+
+> Долговременная межсессионная память для Claude Code. Обёртка над [Hindsight](https://github.com/vectorize-io/hindsight): 28 MCP инструментов, 3 авто-хука, 10 вспомогательных skills и агент-куратор — Claude помнит контекст между сессиями, проектами и неделями работы.
 
 Поставил один раз — каждый проект получает свой приватный bank памяти. Auto-recall вставляет релевантную историю перед каждым твоим сообщением; auto-retain сохраняет разговор после каждого ответа. Ручные MCP-инструменты покрывают синтез (`memory_reflect`), живые страницы знаний (`mental_model_*`) и заливку документов.
 
@@ -89,11 +92,11 @@ Proceed? [y/n]
 
 ## Что внутри
 
-### 27 MCP инструментов
+### 28 MCP инструментов
 
 | Группа | Инструменты |
 |--------|-------------|
-| **Базовая память** | `memory_retain`, `memory_recall`, `memory_reflect`, `memory_status`, `memory_get_current_bank`, `memory_set_mission` |
+| **Базовая память** | `memory_retain`, `memory_retain_batch`, `memory_recall`, `memory_reflect`, `memory_status`, `memory_get_current_bank`, `memory_set_mission` |
 | **Просмотр и исправление** | `memory_list`, `memory_get`, `memory_invalidate`, `memory_reconsolidate`, `memory_operations` |
 | **Mental models** (живые страницы) | `mental_model_list`, `mental_model_get`, `mental_model_create`, `mental_model_update`, `mental_model_delete`, `mental_model_refresh`, `mental_model_clear` |
 | **Директивы** (правила синтеза) | `directive_list`, `directive_create`, `directive_delete` |
@@ -127,7 +130,7 @@ Proceed? [y/n]
 | `retain.mjs` | Stop | Сохраняет transcript после каждого ответа. Throttling через `retainEveryNTurns` (по умолчанию 10). **Compaction detection** — сохраняет старый длинный документ когда Claude Code сжимает сессию. |
 | `session-end.mjs` | SessionEnd | Принудительный retain при закрытии. Страховка для коротких сессий (< `retainEveryNTurns`). |
 
-### 9 skills
+### 10 skills
 
 Описание каждого скилла двуязычное (EN + RU) с триггерами на обоих языках — он срабатывает на
 русский запрос так же, как на английский. И каждый называет **ярус модели**, который нужен его
@@ -144,6 +147,7 @@ Proceed? [y/n]
 | `/fpl-hsmem:correct-memory` | Исправить неверный факт, не уничтожая след: найти, пометить с причиной, записать верное целиком, пересобрать выводы, проверить, что задача завершилась. Вызывается осознанно — у него есть последствия. | B |
 | `/fpl-hsmem:audit-bank` | Аудит только на чтение: включено ли маскирование секретов, сколько стоит один документ, что упало молча. Прогонять в первый же день нового банка. | C/B |
 | `/fpl-hsmem:directives` | Правила, которым следует синтез. Стабильно кривой по форме ответ — это проблема правил, а не фактов. | B |
+| `/fpl-hsmem:enrich` | Выжать из существующих источников (ADR/RFC, журналы решений, треды ревью и чатов) короткие самодостаточные пункты со ссылкой на артефакт, прогнать dry-run, записать после одобрения человеком, проверить recall. Память, а не хранилище документов. | B/C |
 
 ### 1 агент
 
